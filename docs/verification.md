@@ -12,6 +12,11 @@ uv run ruff format --check .
 uv run mypy src
 ```
 
+`uv run pytest` also enforces branch coverage with a minimum total threshold
+of 90%.
+
+The same checks run in `.github/workflows/ci.yml` for Python 3.10 and 3.12.
+
 The current tests cover SE(3) round trips, camera projection, calibration
 validation, detector normalization, connected new-tag discovery, and
 unconnected-observation rejection.
@@ -38,7 +43,7 @@ quick test. The `tagslam_test` repository contains reference tests 1 through
 - Tests 16 and 17: localization accuracy demonstrations.
 - Test 18: moving-block multi-frame state estimation.
 
-These bags use ROS topics and the original MIT detector, while TagAtlas uses
+These bags use ROS topics and the original MIT detector, while the library uses
 pupil-apriltags. They should therefore be evaluated in two stages: first use
 the recorded tag corner messages to validate the optimizer, then extract image
 frames and rerun pupil-apriltags for an end-to-end detector regression.

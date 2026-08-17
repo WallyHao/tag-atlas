@@ -28,6 +28,10 @@ def test_camera_rejects_invalid_points() -> None:
 
     with pytest.raises(ValueError, match="points_camera"):
         camera.project(np.zeros((3, 2)))
+    with pytest.raises(ValueError, match="positive depth"):
+        camera.project(np.array([[0.0, 0.0, 0.0], [0.0, 0.0, -1.0]]))
+    with pytest.raises(ValueError, match="finite"):
+        camera.project(np.array([[0.0, 0.0, np.nan]]))
 
 
 def test_camera_applies_radtan_distortion() -> None:

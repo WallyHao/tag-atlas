@@ -5,8 +5,9 @@ import numpy as np
 import pytest
 
 import tagatlas.localizer as localizer_module
-from tagatlas import CameraModel, Detection, Localizer, LocalizerConfig, Pose
+from tagatlas import CameraModel, Detection, Localizer, LocalizerConfig, Pose, TagMap
 from tagatlas.geometry import inverse_pose, tag_object_points, transform_points
+from tagatlas.pose_graph import GtsamGraphError
 
 
 class SequenceDetector:
@@ -64,8 +65,9 @@ def test_localizer_discovers_tag_and_optimizes_multiple_frames() -> None:
         ),
     ]
     localizer = Localizer(
-        LocalizerConfig(reference_tag_id=0, tag_sizes={0: 0.12, 1: 0.12}),
-        camera,
+        camera=camera,
+        tag_map=TagMap(reference_tag_id=0, tag_sizes={0: 0.12, 1: 0.12}),
+        config=LocalizerConfig(),
         detector=SequenceDetector(frames),
     )
 
@@ -84,6 +86,49 @@ def test_localizer_discovers_tag_and_optimizes_multiple_frames() -> None:
     assert localizer.factor_count == 4
 
 
+def test_noisy_synthetic_sequence_stays_within_quality_gate() -> None:
+    camera = CameraModel(
+        np.array([[500.0, 0.0, 320.0], [0.0, 500.0, 240.0], [0.0, 0.0, 1.0]])
+    )
+    tag_poses = {
+        0: Pose.identity(),
+        1: Pose(np.eye(3), np.array([0.4, 0.0, 0.0])),
+    }
+    camera_pose = Pose(np.diag([1.0, -1.0, -1.0]), np.array([0.1, 0.0, 1.5]))
+    rng = np.random.default_rng(7)
+    frame = make_frame(camera, camera_pose, tag_poses, [0, 1])
+    noisy_frame = [
+        Detection(
+            tag_id=detection.tag_id,
+            corners=detection.corners + rng.normal(0.0, 0.2, (4, 2)),
+            tag_family=detection.tag_family,
+            decision_margin=detection.decision_margin,
+        )
+        for detection in frame
+    ]
+    localizer = Localizer(
+        config=LocalizerConfig(
+            max_reprojection_error=8.0,
+            robust_loss="huber",
+        ),
+        camera=camera,
+        tag_map=TagMap(reference_tag_id=0, tag_sizes={0: 0.12, 1: 0.12}),
+        detector=SequenceDetector([noisy_frame]),
+    )
+
+    result = localizer.locate(np.zeros((480, 640), dtype=np.uint8))
+
+    assert result.success
+    assert result.camera_pose is not None
+    assert result.reprojection_rmse is not None
+    assert result.reprojection_rmse < 1.0
+    np.testing.assert_allclose(
+        result.camera_pose.translation,
+        camera_pose.translation,
+        atol=0.12,
+    )
+
+
 def test_unconnected_tag_is_not_added_to_graph() -> None:
     camera = CameraModel(
         np.array([[500.0, 0.0, 320.0], [0.0, 500.0, 240.0], [0.0, 0.0, 1.0]])
@@ -93,8 +138,9 @@ def test_unconnected_tag_is_not_added_to_graph() -> None:
     frame = make_frame(camera, camera_pose, tag_poses, [1])
     detector = SequenceDetector([frame])
     localizer = Localizer.from_config(
-        {"tag_sizes": {0: 0.12, 1: 0.12}},
-        camera,
+        camera=camera,
+        tag_map=TagMap(reference_tag_id=0, tag_sizes={0: 0.12, 1: 0.12}),
+        config={},
         detector=detector,
     )
 
@@ -124,8 +170,9 @@ def test_rejected_frame_does_not_change_graph() -> None:
         decision_margin=50.0,
     )
     localizer = Localizer.from_config(
-        {"tag_sizes": {0: 0.12, 1: 0.12}, "max_reprojection_error": 1.0},
-        camera,
+        camera=camera,
+        tag_map=TagMap(reference_tag_id=0, tag_sizes={0: 0.12, 1: 0.12}),
+        config={"max_reprojection_error": 1.0},
         detector=SequenceDetector([good_frame, bad_frame]),
     )
 
@@ -160,8 +207,9 @@ def test_empty_frame_is_rejected() -> None:
         np.array([[500.0, 0.0, 320.0], [0.0, 500.0, 240.0], [0.0, 0.0, 1.0]])
     )
     localizer = Localizer(
-        LocalizerConfig(reference_tag_id=0, tag_sizes={0: 0.12}),
-        camera,
+        camera=camera,
+        tag_map=TagMap(reference_tag_id=0, tag_sizes={0: 0.12}),
+        config=LocalizerConfig(),
         detector=SequenceDetector([[]]),
     )
 
@@ -178,10 +226,18 @@ def test_camera_initialization_failure_is_reported(
     camera = CameraModel(
         np.array([[500.0, 0.0, 320.0], [0.0, 500.0, 240.0], [0.0, 0.0, 1.0]])
     )
-    frame = [Detection(0, np.zeros((4, 2)), "tag36h11", decision_margin=50.0)]
+    frame = [
+        Detection(
+            0,
+            np.array([[0.0, 0.0], [20.0, 0.0], [20.0, 20.0], [0.0, 20.0]]),
+            "tag36h11",
+            decision_margin=50.0,
+        )
+    ]
     localizer = Localizer(
-        LocalizerConfig(reference_tag_id=0, tag_sizes={0: 0.12}),
-        camera,
+        camera=camera,
+        tag_map=TagMap(reference_tag_id=0, tag_sizes={0: 0.12}),
+        config=LocalizerConfig(),
         detector=SequenceDetector([frame]),
     )
     monkeypatch.setattr(
@@ -200,14 +256,20 @@ def test_initial_reprojection_failure_does_not_update_graph(
     camera = CameraModel(
         np.array([[500.0, 0.0, 320.0], [0.0, 500.0, 240.0], [0.0, 0.0, 1.0]])
     )
-    frame = [Detection(0, np.zeros((4, 2)), "tag36h11", decision_margin=50.0)]
+    frame = [
+        Detection(
+            0,
+            np.array([[0.0, 0.0], [20.0, 0.0], [20.0, 20.0], [0.0, 20.0]]),
+            "tag36h11",
+            decision_margin=50.0,
+        )
+    ]
     localizer = Localizer(
-        LocalizerConfig(
-            reference_tag_id=0,
-            tag_sizes={0: 0.12},
+        config=LocalizerConfig(
             max_reprojection_error=1.0,
         ),
-        camera,
+        camera=camera,
+        tag_map=TagMap(reference_tag_id=0, tag_sizes={0: 0.12}),
         detector=SequenceDetector([frame]),
     )
     monkeypatch.setattr(localizer_module, "reprojection_rmse", lambda *_args: 2.0)
@@ -227,20 +289,54 @@ def test_graph_update_failure_is_rolled_back(monkeypatch: pytest.MonkeyPatch) ->
     tag_poses = {0: Pose.identity()}
     camera_pose = Pose(np.diag([1.0, -1.0, -1.0]), np.array([0.0, 0.0, 1.5]))
     localizer = Localizer(
-        LocalizerConfig(reference_tag_id=0, tag_sizes={0: 0.12}),
-        camera,
+        camera=camera,
+        tag_map=TagMap(reference_tag_id=0, tag_sizes={0: 0.12}),
+        config=LocalizerConfig(),
         detector=SequenceDetector([[*make_frame(camera, camera_pose, tag_poses, [0])]]),
     )
 
     def fail(*_args: Any, **_kwargs: Any) -> None:
-        raise RuntimeError("synthetic graph failure")
+        raise GtsamGraphError("synthetic graph failure")
 
     monkeypatch.setattr(localizer._graph, "update", fail)
     result = localizer.locate(np.zeros((480, 640), dtype=np.uint8))
 
     assert not result.success
-    assert "GTSAM update failed: synthetic graph failure" == result.reason
+    assert result.reason == "GTSAM update failed: synthetic graph failure"
     assert localizer.factor_count == 0
+
+
+def test_graph_rebuild_failure_is_reported(monkeypatch: pytest.MonkeyPatch) -> None:
+    camera = CameraModel(
+        np.array([[500.0, 0.0, 320.0], [0.0, 500.0, 240.0], [0.0, 0.0, 1.0]])
+    )
+    tag_poses = {0: Pose.identity()}
+    camera_pose = Pose(np.diag([1.0, -1.0, -1.0]), np.array([0.0, 0.0, 1.5]))
+    localizer = Localizer(
+        camera=camera,
+        tag_map=TagMap(reference_tag_id=0, tag_sizes={0: 0.12}),
+        config=LocalizerConfig(),
+        detector=SequenceDetector([make_frame(camera, camera_pose, tag_poses, [0])]),
+    )
+
+    monkeypatch.setattr(
+        localizer._graph,
+        "update",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            GtsamGraphError("synthetic graph failure")
+        ),
+    )
+    monkeypatch.setattr(
+        localizer,
+        "_rebuild_graph",
+        lambda: (_ for _ in ()).throw(GtsamGraphError("synthetic rebuild failure")),
+    )
+
+    result = localizer.locate(np.zeros((480, 640), dtype=np.uint8))
+
+    assert not result.success
+    assert result.reason is not None
+    assert "graph rebuild failed: synthetic rebuild failure" in result.reason
 
 
 def test_reprojection_failure_after_optimization_is_rolled_back(
@@ -252,12 +348,11 @@ def test_reprojection_failure_after_optimization_is_rolled_back(
     tag_poses = {0: Pose.identity()}
     camera_pose = Pose(np.diag([1.0, -1.0, -1.0]), np.array([0.0, 0.0, 1.5]))
     localizer = Localizer(
-        LocalizerConfig(
-            reference_tag_id=0,
-            tag_sizes={0: 0.12},
+        config=LocalizerConfig(
             max_reprojection_error=1.0,
         ),
-        camera,
+        camera=camera,
+        tag_map=TagMap(reference_tag_id=0, tag_sizes={0: 0.12}),
         detector=SequenceDetector([[*make_frame(camera, camera_pose, tag_poses, [0])]]),
     )
     values = iter([0.0, 2.0])
@@ -280,8 +375,9 @@ def test_reset_clears_map_and_rebuilds_accepted_graph() -> None:
     camera_pose = Pose(np.diag([1.0, -1.0, -1.0]), np.array([0.0, 0.0, 1.5]))
     frame = make_frame(camera, camera_pose, tag_poses, [0, 1])
     localizer = Localizer(
-        LocalizerConfig(reference_tag_id=0, tag_sizes={0: 0.12, 1: 0.12}),
-        camera,
+        camera=camera,
+        tag_map=TagMap(reference_tag_id=0, tag_sizes={0: 0.12, 1: 0.12}),
+        config=LocalizerConfig(),
         detector=SequenceDetector([frame, frame]),
     )
 

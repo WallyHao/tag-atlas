@@ -16,6 +16,9 @@ as observations connect them to the existing map.
 - `Pose`, `Detection`, `CameraModel`, and `LocalizerConfig` are typed public
   data structures.
 - Camera projection supports OpenCV-style radtan distortion.
+- Detection geometry and PnP enforce finite, convex, positive-depth inputs.
+- Projection factors support configurable Huber, Cauchy, or ordinary noise.
+- The package exposes opt-in standard-library logging.
 - The GTSAM graph uses `Pose3` values, a fixed reference-tag prior, and
   incremental `ISAM2` updates.
 - A tag observation is represented by one eight-dimensional custom factor for
@@ -40,17 +43,24 @@ as observations connect them to the existing map.
 The minimum mapping configuration is:
 
 ```python
-config = {
+tag_map = {
     "reference_tag_id": 0,
     "tag_sizes": {0: 0.12, 1: 0.12, 2: 0.15},
+}
+config = {
     "tag_family": "tag36h11",
     "pixel_noise": 1.0,
     "max_reprojection_error": 8.0,
+    "min_tag_area": 16.0,
+    "robust_loss": "huber",
+    "robust_scale": 1.345,
 }
+tag_map = TagMap.from_mapping(tag_map)
+config = LocalizerConfig.from_mapping(config)
 ```
 
-The camera calibration is passed as a `CameraModel`. Tag dimensions are in
-meters and image coordinates are in pixels.
+The camera calibration is passed as a `CameraModel`, Tag dimensions are held by
+`TagMap`, and image coordinates are in pixels.
 
 ## Acceptance Criteria
 

@@ -18,7 +18,7 @@ def make_raw_detection(
 ) -> SimpleNamespace:
     return SimpleNamespace(
         tag_id=tag_id,
-        corners=np.zeros((4, 2)),
+        corners=np.array([[0.0, 0.0], [20.0, 0.0], [20.0, 20.0], [0.0, 20.0]]),
         tag_family=family,
         decision_margin=margin,
     )
@@ -28,9 +28,10 @@ def test_filter_detections_keeps_only_best_valid_detection() -> None:
     values = [
         make_raw_detection(1, margin=5.0),
         make_raw_detection(1, margin=20.0),
+        make_raw_detection(1, margin=15.0),
         make_raw_detection(2, family="tag25h9"),
         make_raw_detection(3),
-        Detection(4, np.zeros((4, 2)), "tag36h11", decision_margin=2.0),
+        Detection(4, np.zeros((4, 2)), "tag36h11", decision_margin=20.0),
     ]
 
     selected = filter_detections(

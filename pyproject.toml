@@ -33,7 +33,7 @@ where = ["src"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 strict_markers = true
-addopts = "-ra --cov=tagatlas --cov-report=term-missing --cov-fail-under=90"
+addopts = "-ra --cov=tagatlas --cov-branch --cov-report=term-missing --cov-fail-under=90"
 
 [tool.ruff]
 line-length = 88

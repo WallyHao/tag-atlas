@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -17,7 +18,10 @@ from .camera import CameraModel
 from .initialization import seed_camera_pose, seed_tag_pose
 from .metrics import reprojection_rmse
 from .models import LocalizationResult, LocalizerConfig, Pose
-from .pose_graph import GtsamGraph, ProjectionConstraint
+from .pose_graph import GtsamGraph, GtsamGraphError, ProjectionConstraint
+from .tag_map import TagMap
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -37,44 +41,56 @@ class Localizer:
 
     def __init__(
         self,
-        config: LocalizerConfig,
-        camera: CameraModel,
         *,
-        detector: DetectorProtocol | Any | None = None,
+        camera: CameraModel,
+        tag_map: TagMap,
+        config: LocalizerConfig | None = None,
+        detector: DetectorProtocol | None = None,
     ) -> None:
-        self.config = config
+        self.config = config or LocalizerConfig()
         self.camera = camera
-        self._detector = detector or PupilAprilTagDetector(config.tag_family)
+        self.tag_map = tag_map
+        self._detector = detector or PupilAprilTagDetector(self.config.tag_family)
         self._frame_id = 0
         self._last_camera_pose: Pose | None = None
         self._known_tag_poses: dict[int, Pose] = {
-            self.config.reference_tag_id: Pose.identity()
+            self.tag_map.reference_tag_id: Pose.identity()
         }
         self._accepted_updates: list[_GraphUpdate] = []
         self._graph = GtsamGraph(
-            self.config.reference_tag_id,
+            self.tag_map.reference_tag_id,
             self.config.pixel_noise,
             self.camera,
+            robust_loss=self.config.robust_loss,
+            robust_scale=self.config.robust_scale,
+        )
+        logger.debug(
+            "created localizer reference_tag_id=%d tag_count=%d",
+            self.tag_map.reference_tag_id,
+            len(self.tag_map.tag_sizes),
         )
 
     @classmethod
     def from_config(
         cls,
-        config: LocalizerConfig | Mapping[str, object],
-        camera: CameraModel,
         *,
-        detector: DetectorProtocol | Any | None = None,
+        camera: CameraModel,
+        tag_map: TagMap,
+        config: LocalizerConfig | Mapping[str, object] | None = None,
+        detector: DetectorProtocol | None = None,
     ) -> Localizer:
-        """Construct a localizer from typed or mapping configuration."""
+        """Construct a localizer from typed or mapping algorithm configuration."""
 
-        parsed = (
-            config
-            if isinstance(config, LocalizerConfig)
-            else LocalizerConfig.from_mapping(config)
-        )
+        if config is None:
+            parsed = LocalizerConfig()
+        elif isinstance(config, LocalizerConfig):
+            parsed = config
+        else:
+            parsed = LocalizerConfig.from_mapping(config)
         return cls(
-            parsed,
-            camera,
+            camera=camera,
+            tag_map=tag_map,
+            config=parsed,
             detector=detector,
         )
 
@@ -82,7 +98,13 @@ class Localizer:
     def tag_sizes(self) -> Mapping[int, float]:
         """Return configured tag sizes in meters."""
 
-        return self.config.tag_sizes
+        return self.tag_map.tag_sizes
+
+    @property
+    def reference_tag_id(self) -> int:
+        """Return the fixed world-frame reference Tag ID."""
+
+        return self.tag_map.reference_tag_id
 
     @property
     def tag_poses(self) -> Mapping[int, Pose]:
@@ -101,13 +123,16 @@ class Localizer:
 
         self._frame_id = 0
         self._last_camera_pose = None
-        self._known_tag_poses = {self.config.reference_tag_id: Pose.identity()}
+        self._known_tag_poses = {self.tag_map.reference_tag_id: Pose.identity()}
         self._accepted_updates = []
         self._graph = GtsamGraph(
-            self.config.reference_tag_id,
+            self.tag_map.reference_tag_id,
             self.config.pixel_noise,
             self.camera,
+            robust_loss=self.config.robust_loss,
+            robust_scale=self.config.robust_scale,
         )
+        logger.info("localizer state reset")
 
     def _failure(
         self,
@@ -115,6 +140,12 @@ class Localizer:
         reason: str,
         used_tag_ids: Sequence[int] = (),
     ) -> LocalizationResult:
+        logger.debug(
+            "frame rejected frame_id=%d reason=%s used_tag_ids=%s",
+            frame_id,
+            reason,
+            tuple(used_tag_ids),
+        )
         return LocalizationResult(
             success=False,
             frame_id=frame_id,
@@ -127,9 +158,11 @@ class Localizer:
 
     def _rebuild_graph(self) -> None:
         self._graph = GtsamGraph(
-            self.config.reference_tag_id,
+            self.tag_map.reference_tag_id,
             self.config.pixel_noise,
             self.camera,
+            robust_loss=self.config.robust_loss,
+            robust_scale=self.config.robust_scale,
         )
         for update in self._accepted_updates:
             self._graph.update(
@@ -147,9 +180,11 @@ class Localizer:
         detections = filter_detections(
             self._detector.detect(image),
             tag_family=self.config.tag_family,
-            tag_sizes=self.config.tag_sizes,
+            tag_sizes=self.tag_map.tag_sizes,
             min_decision_margin=self.config.min_decision_margin,
+            min_tag_area=self.config.min_tag_area,
         )
+        logger.debug("processing frame_id=%d detections=%d", frame_id, len(detections))
         if not detections:
             return self._failure(frame_id, "no configured AprilTags detected")
 
@@ -166,7 +201,7 @@ class Localizer:
         camera_pose = seed_camera_pose(
             known_detections,
             self._known_tag_poses,
-            self.config.tag_sizes,
+            self.tag_map.tag_sizes,
             self.camera,
             fallback=self._last_camera_pose,
         )
@@ -179,7 +214,7 @@ class Localizer:
             if detection.tag_id in candidate_tag_poses:
                 continue
             pose = seed_tag_pose(
-                detection, camera_pose, self.config.tag_sizes, self.camera
+                detection, camera_pose, self.tag_map.tag_sizes, self.camera
             )
             if pose is not None:
                 candidate_tag_poses[detection.tag_id] = pose
@@ -190,7 +225,7 @@ class Localizer:
             ProjectionConstraint(
                 camera_key=camera_key,
                 tag_key=GtsamGraph.tag_key(detection.tag_id),
-                tag_size=self.config.tag_sizes[detection.tag_id],
+                tag_size=self.tag_map.tag_sizes[detection.tag_id],
                 image_corners=detection.corners,
             )
             for detection in detections
@@ -206,7 +241,7 @@ class Localizer:
             camera_pose,
             accepted_detections,
             candidate_tag_poses,
-            self.config.tag_sizes,
+            self.tag_map.tag_sizes,
             self.camera,
         )
         if initial_rmse > self.config.max_reprojection_error:
@@ -225,8 +260,21 @@ class Localizer:
 
         try:
             self._graph.update(camera_key, camera_pose, new_tag_poses, constraints)
-        except Exception as exc:
-            self._rebuild_graph()
+        except GtsamGraphError as exc:
+            logger.warning(
+                "graph update failed frame_id=%d; rebuilding graph: %s",
+                frame_id,
+                exc,
+                exc_info=True,
+            )
+            try:
+                self._rebuild_graph()
+            except GtsamGraphError as rebuild_exc:
+                logger.exception("graph rebuild failed after update failure")
+                return self._failure(
+                    frame_id,
+                    f"GTSAM update failed: {exc}; graph rebuild failed: {rebuild_exc}",
+                )
             return self._failure(frame_id, f"GTSAM update failed: {exc}")
 
         optimized_camera = self._graph.pose_for_key(camera_key)
@@ -244,12 +292,21 @@ class Localizer:
             optimized_camera,
             accepted_detections,
             optimized_tags,
-            self.config.tag_sizes,
+            self.tag_map.tag_sizes,
             self.camera,
         )
         success = rmse <= self.config.max_reprojection_error
         if not success:
-            self._rebuild_graph()
+            try:
+                self._rebuild_graph()
+            except GtsamGraphError as rebuild_exc:
+                logger.exception("graph rebuild failed after reprojection rejection")
+                return self._failure(
+                    frame_id,
+                    "reprojection error exceeds configured limit; "
+                    f"graph rebuild failed: {rebuild_exc}",
+                    used_ids,
+                )
             return self._failure(
                 frame_id,
                 "reprojection error exceeds configured limit",
@@ -258,6 +315,12 @@ class Localizer:
         self._accepted_updates.append(update)
         self._known_tag_poses = optimized_tags
         self._last_camera_pose = optimized_camera
+        logger.info(
+            "frame accepted frame_id=%d used_tag_ids=%s rmse=%.3f",
+            frame_id,
+            used_ids,
+            rmse,
+        )
         return LocalizationResult(
             success=success,
             frame_id=frame_id,

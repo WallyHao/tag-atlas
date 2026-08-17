@@ -7,19 +7,12 @@ uv sync
 ```
 
 The default detector is provided by `pupil-apriltags`. A custom detector can
-be injected for a different detector implementation or for testing.
+be injected for a different implementation or for testing.
 
-## Build The Camera Model
+## Configure The Camera
 
 `CameraModel` expects a 3x3 pinhole intrinsic matrix and zero to five OpenCV
-radtan coefficients in this order:
-
-```text
-k1, k2, p1, p2, k3
-```
-
-Equidistant/fisheye calibration is not supported. Convert the calibration to
-the radtan model before constructing the camera model.
+radtan coefficients:
 
 ```python
 import numpy as np
@@ -35,57 +28,70 @@ camera = CameraModel(
 )
 ```
 
-## Configure The Map
+Equidistant and fisheye calibration models are not supported.
 
-The reference tag is the world-frame origin. All tags that may be added to the
-map must be listed with their physical size in meters.
+## Configure The Tag Map
+
+`TagMap` explicitly identifies the world-frame reference Tag and the physical
+size of every Tag that may be observed:
+
+```python
+from tagatlas import TagMap
+
+tag_map = TagMap(
+    reference_tag_id=0,
+    tag_sizes={0: 0.12, 1: 0.12, 2: 0.15},
+)
+```
+
+For YAML/JSON-like data, use:
+
+```python
+tag_map = TagMap.from_mapping(
+    {
+        "reference_tag_id": 0,
+        "tag_sizes": {0: 0.12, 1: 0.12, 2: 0.15},
+    }
+)
+```
+
+## Configure The Localizer
+
+`LocalizerConfig` contains algorithm parameters only:
 
 ```python
 from tagatlas import LocalizerConfig
 
 config = LocalizerConfig(
-    reference_tag_id=0,
-    tag_sizes={0: 0.12, 1: 0.12, 2: 0.15},
     tag_family="tag36h11",
     pixel_noise=1.0,
     max_reprojection_error=8.0,
+    min_tag_area=16.0,
+    robust_loss="huber",
+    robust_scale=1.345,
 )
 ```
 
-For YAML/JSON-like mappings, use `Localizer.from_config()` instead:
-
-```python
-from tagatlas import Localizer
-
-localizer = Localizer.from_config(
-    {
-        "reference_tag_id": 0,
-        "tag_sizes": {0: 0.12, 1: 0.12, 2: 0.15},
-    },
-    camera,
-)
-```
-
-For the typed form, pass the `LocalizerConfig` and `CameraModel` directly:
-
-```python
-from tagatlas import Localizer
-
-localizer = Localizer(config, camera)
-```
+It can also be loaded from a mapping with `LocalizerConfig.from_mapping()`.
 
 ## Process Frames
 
-`locate()` accepts a grayscale, BGR, or BGRA NumPy image. It returns a
-`LocalizationResult` for every frame, including rejected frames.
+Construct the stateful runtime explicitly:
 
 ```python
-import cv2
+from tagatlas import Localizer
 
-image = cv2.imread("frame.png")
-if image is None:
-    raise RuntimeError("unable to read frame.png")
+localizer = Localizer(
+    camera=camera,
+    tag_map=tag_map,
+    config=config,
+)
+```
 
+`locate()` accepts grayscale, BGR, or BGRA NumPy images and returns a result for
+every frame, including rejected frames:
+
+```python
 result = localizer.locate(image)
 if result.success:
     assert result.camera_pose is not None
@@ -97,7 +103,21 @@ else:
     print("rejected:", result.reason)
 ```
 
-Call `locate()` repeatedly on sequential frames. The camera pose is expressed
-in the reference-tag world frame, and `tag_poses` contains the latest map.
-Call `reset()` to clear the trajectory and map while keeping calibration and
-configuration.
+The camera pose is expressed in the reference-Tag world frame. Call `reset()`
+to clear the trajectory and map while keeping calibration and configuration.
+
+## Logging
+
+TagAtlas uses the standard library `logging` package and does not emit output
+unless configured by the application:
+
+```python
+import logging
+
+from tagatlas import configure_logging
+
+configure_logging(logging.INFO)
+```
+
+Applications that already manage handlers can configure the `tagatlas` logger
+directly.

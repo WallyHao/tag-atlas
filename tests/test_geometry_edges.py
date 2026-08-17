@@ -22,6 +22,26 @@ def test_geometry_rejects_invalid_inputs() -> None:
             np.eye(3),
             np.zeros(5),
         )
+    with pytest.raises(ValueError, match="object_points"):
+        geometry.pose_from_pnp(
+            np.zeros((4, 2)), np.zeros((4, 2)), np.eye(3), np.zeros(5)
+        )
+    with pytest.raises(ValueError, match="image_points"):
+        geometry.pose_from_pnp(
+            np.zeros((4, 3)), np.zeros((4, 3)), np.eye(3), np.zeros(5)
+        )
+    with pytest.raises(ValueError, match="finite"):
+        geometry.pose_from_pnp(
+            np.full((4, 3), np.nan), np.zeros((4, 2)), np.eye(3), np.zeros(5)
+        )
+    with pytest.raises(ValueError, match="camera_matrix"):
+        geometry.pose_from_pnp(
+            np.zeros((4, 3)), np.zeros((4, 2)), np.eye(2), np.zeros(5)
+        )
+    with pytest.raises(ValueError, match="calibration"):
+        geometry.pose_from_pnp(
+            np.zeros((4, 3)), np.zeros((4, 2)), np.eye(3), np.array([np.nan])
+        )
 
 
 def test_pose_from_matrix_converts_homogeneous_transform() -> None:
@@ -67,3 +87,35 @@ def test_pnp_returns_none_when_both_methods_report_failure(
     )
 
     assert result is None
+
+
+def test_pnp_rejects_invalid_depth_and_rodrigues_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        geometry.cv2,
+        "solvePnP",
+        lambda *_args, **_kwargs: (
+            True,
+            np.zeros((3, 1)),
+            np.array([[0.0], [0.0], [-1.0]]),
+        ),
+    )
+    assert (
+        geometry.pose_from_pnp(
+            np.zeros((4, 3)), np.zeros((4, 2)), np.eye(3), np.zeros(5)
+        )
+        is None
+    )
+
+    monkeypatch.setattr(
+        geometry.cv2,
+        "Rodrigues",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(cv2.error("failure")),
+    )
+    assert (
+        geometry.pose_from_pnp(
+            np.zeros((4, 3)), np.zeros((4, 2)), np.eye(3), np.zeros(5)
+        )
+        is None
+    )

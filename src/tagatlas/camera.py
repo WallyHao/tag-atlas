@@ -21,8 +21,6 @@ class CameraModel:
         matrix = np.asarray(self.matrix, dtype=np.float64)
         if matrix.shape != (3, 3):
             raise ValueError("camera matrix must have shape (3, 3)")
-        if matrix[0, 0] <= 0.0 or matrix[1, 1] <= 0.0:
-            raise ValueError("camera focal lengths must be positive")
         distortion = np.asarray(
             self.distortion_coefficients
             if self.distortion_coefficients is not None
@@ -33,8 +31,12 @@ class CameraModel:
             raise ValueError("radtan distortion accepts at most five coefficients")
         if not np.isfinite(matrix).all() or not np.isfinite(distortion).all():
             raise ValueError("camera calibration must contain finite values")
-        object.__setattr__(self, "matrix", matrix.copy())
-        object.__setattr__(self, "distortion_coefficients", distortion.copy())
+        if matrix[0, 0] <= 0.0 or matrix[1, 1] <= 0.0:
+            raise ValueError("camera focal lengths must be positive")
+        matrix.setflags(write=False)
+        distortion.setflags(write=False)
+        object.__setattr__(self, "matrix", matrix)
+        object.__setattr__(self, "distortion_coefficients", distortion)
 
     @property
     def fx(self) -> float:
@@ -59,9 +61,12 @@ class CameraModel:
         if points.ndim != 2 or points.shape[1] != 3:
             raise ValueError("points_camera must have shape (N, 3)")
         z = points[:, 2]
-        z_safe = np.where(z > 1e-9, z, 1e-9)
-        x = points[:, 0] / z_safe
-        y = points[:, 1] / z_safe
+        if not np.isfinite(points).all():
+            raise ValueError("points_camera must contain finite values")
+        if np.any(z <= 1e-9):
+            raise ValueError("points_camera must have positive depth")
+        x = points[:, 0] / z
+        y = points[:, 1] / z
         assert self.distortion_coefficients is not None
         coeffs = np.zeros(5, dtype=np.float64)
         coeffs[: self.distortion_coefficients.size] = self.distortion_coefficients

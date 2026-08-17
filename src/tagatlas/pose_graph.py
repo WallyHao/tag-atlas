@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -19,6 +20,12 @@ except ImportError:  # pragma: no cover - exercised when dependencies are missin
     pass
 else:
     gtsam = _gtsam
+
+logger = logging.getLogger(__name__)
+
+
+class GtsamGraphError(RuntimeError):
+    """A GTSAM graph operation failed at the adapter boundary."""
 
 
 @dataclass(frozen=True)
@@ -93,6 +100,8 @@ class GtsamGraph:
         reference_tag_id: int,
         pixel_noise: float,
         camera: CameraModel,
+        robust_loss: str = "huber",
+        robust_scale: float = 1.345,
     ) -> None:
         if gtsam is None:
             raise RuntimeError(
@@ -100,6 +109,14 @@ class GtsamGraph:
             )
         self._camera_model = camera
         self._pixel_noise = pixel_noise
+        if robust_loss not in {"none", "huber", "cauchy"}:
+            raise ValueError("robust_loss must be none, huber, or cauchy")
+        if not np.isfinite(pixel_noise) or pixel_noise <= 0.0:
+            raise ValueError("pixel_noise must be positive and finite")
+        if not np.isfinite(robust_scale) or robust_scale <= 0.0:
+            raise ValueError("robust_scale must be positive and finite")
+        self._robust_loss = robust_loss
+        self._robust_scale = robust_scale
         self._isam = gtsam.ISAM2()
         self._factor_graph = gtsam.NonlinearFactorGraph()
         self._estimate = gtsam.Values()
@@ -117,6 +134,11 @@ class GtsamGraph:
         self._isam.update(self._factor_graph, initial)
         self._estimate = self._isam.calculateEstimate()
         self._known_keys.add(self._reference_key)
+        logger.debug(
+            "initialized graph reference_tag_id=%d robust_loss=%s",
+            reference_tag_id,
+            robust_loss,
+        )
 
     @staticmethod
     def camera_key(frame_id: int) -> int:
@@ -149,7 +171,15 @@ class GtsamGraph:
     def _make_factor(self, constraint: ProjectionConstraint) -> object:
         if gtsam is None:  # pragma: no cover
             raise RuntimeError("GTSAM is unavailable")
-        noise = gtsam.noiseModel.Isotropic.Sigma(8, self._pixel_noise)
+        base_noise = gtsam.noiseModel.Isotropic.Sigma(8, self._pixel_noise)
+        if self._robust_loss == "none":
+            noise = base_noise
+        else:
+            estimator_type = getattr(
+                gtsam.noiseModel.mEstimator, self._robust_loss.title()
+            )
+            estimator = estimator_type.Create(self._robust_scale)
+            noise = gtsam.noiseModel.Robust.Create(estimator, base_noise)
 
         def error_function(
             _factor: Any,
@@ -193,29 +223,44 @@ class GtsamGraph:
 
         if gtsam is None:  # pragma: no cover
             raise RuntimeError("GTSAM is unavailable")
-        values = gtsam.Values()
-        values.insert(camera_key, _to_gtsam_pose(camera_initial))
-        self._known_keys.add(camera_key)
-        for tag_id, pose in new_tags:
-            key = self.tag_key(tag_id)
-            if key in self._known_keys:
-                continue
-            values.insert(key, _to_gtsam_pose(pose))
-            self._known_keys.add(key)
+        try:
+            values = gtsam.Values()
+            values.insert(camera_key, _to_gtsam_pose(camera_initial))
+            known_keys = set(self._known_keys)
+            known_keys.add(camera_key)
+            for tag_id, pose in new_tags:
+                key = self.tag_key(tag_id)
+                if key in known_keys:
+                    continue
+                values.insert(key, _to_gtsam_pose(pose))
+                known_keys.add(key)
 
-        factors = gtsam.NonlinearFactorGraph()
-        for constraint in constraints:
-            factors.add(self._make_factor(constraint))
-        for index in range(factors.size()):
-            self._factor_graph.add(factors.at(index))
+            factors = gtsam.NonlinearFactorGraph()
+            for constraint in constraints:
+                factors.add(self._make_factor(constraint))
+            self._isam.update(factors, values)
+            estimate = self._isam.calculateEstimate()
+            for index in range(factors.size()):
+                self._factor_graph.add(factors.at(index))
+        except Exception as exc:
+            raise GtsamGraphError(f"GTSAM graph update failed: {exc}") from exc
+        self._estimate = estimate
+        self._known_keys = known_keys
         self._factor_count += len(constraints)
-        self._isam.update(factors, values)
-        self._estimate = self._isam.calculateEstimate()
+        logger.debug(
+            "graph update camera_key=%d new_tags=%d constraints=%d",
+            camera_key,
+            len(new_tags),
+            len(constraints),
+        )
 
     def pose_for_key(self, key: int) -> Pose:
         """Return the current optimized pose for a key."""
 
-        return _from_gtsam_pose(self._estimate.atPose3(key))
+        try:
+            return _from_gtsam_pose(self._estimate.atPose3(key))
+        except Exception as exc:
+            raise GtsamGraphError(f"unable to read GTSAM pose for key {key}") from exc
 
 
 def _to_gtsam_pose(pose: Pose) -> object:

@@ -2,13 +2,31 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Mapping, Sequence
 from typing import Any, Protocol
 
 import cv2
 import numpy as np
+from numpy.typing import NDArray
 
 from .models import Detection
+
+logger = logging.getLogger(__name__)
+
+
+def _is_valid_quad(corners: NDArray[np.float64], min_area: float) -> bool:
+    edges = np.roll(corners, -1, axis=0) - corners
+    next_edges = np.roll(edges, -1, axis=0)
+    cross_products = edges[:, 0] * next_edges[:, 1] - edges[:, 1] * next_edges[:, 0]
+    area = 0.5 * abs(
+        float(np.dot(corners[:, 0], np.roll(corners[:, 1], -1)))
+        - float(np.dot(corners[:, 1], np.roll(corners[:, 0], -1)))
+    )
+    same_orientation = bool(
+        np.all(cross_products > 1e-9) or np.all(cross_products < -1e-9)
+    )
+    return bool(area >= min_area and same_orientation)
 
 
 class DetectorProtocol(Protocol):
@@ -42,6 +60,7 @@ def filter_detections(
     tag_family: str,
     tag_sizes: Mapping[int, float],
     min_decision_margin: float,
+    min_tag_area: float = 16.0,
 ) -> tuple[Detection, ...]:
     """Normalize and filter detections accepted by the localizer."""
 
@@ -56,10 +75,18 @@ def filter_detections(
             continue
         if detection.decision_margin < min_decision_margin:
             continue
+        if not _is_valid_quad(detection.corners, min_tag_area):
+            continue
         previous = selected.get(detection.tag_id)
         if previous is None or detection.decision_margin > previous.decision_margin:
             selected[detection.tag_id] = detection
-    return tuple(selected.values())
+    result = tuple(selected.values())
+    logger.debug(
+        "filtered AprilTag detections input=%d accepted=%d",
+        len(values),
+        len(result),
+    )
+    return result
 
 
 class PupilAprilTagDetector:
