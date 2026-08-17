@@ -23,7 +23,7 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@v5
         with:
-          version: latest
+          version: "0.12.1"
 
       - name: Install dependencies
         run: uv sync --dev --python ${{ matrix.python-version }}
@@ -42,3 +42,12 @@ jobs:
 
       - name: Check lock file
         run: uv lock --check
+
+      - name: Build wheel
+        run: uv build
+
+      - name: Install wheel in clean environment
+        run: |
+          python -m venv /tmp/tagatlas-wheel-env
+          /tmp/tagatlas-wheel-env/bin/pip install --quiet dist/*.whl
+          /tmp/tagatlas-wheel-env/bin/python -c "import tagatlas; print(tagatlas.__version__)"

@@ -53,6 +53,15 @@ def test_localization_result_is_deeply_immutable() -> None:
 
     with pytest.raises(TypeError):
         result.tag_poses[1] = Pose.identity()  # type: ignore[index]
+    with pytest.raises(ValueError, match="camera_pose"):
+        LocalizationResult(
+            success=True,
+            frame_id=0,
+            camera_pose=None,
+            tag_poses={},
+            used_tag_ids=(),
+            reprojection_rmse=0.0,
+        )
 
 
 def test_config_normalizes_mapping_values() -> None:
@@ -102,3 +111,5 @@ def test_config_rejects_invalid_values() -> None:
         LocalizerConfig(robust_scale=0.0)
     with pytest.raises(ValueError, match="finite"):
         LocalizerConfig(pixel_noise=float("inf"))
+    with pytest.raises(ValueError, match="unknown"):
+        LocalizerConfig.from_mapping({"pixel_niose": 1.0})

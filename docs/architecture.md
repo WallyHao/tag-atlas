@@ -42,9 +42,9 @@ matches pupil-apriltags' counter-clockwise output.
 Each image detection adds an eight-dimensional `gtsam.CustomFactor`. Its
 residual is the four predicted pixel corners minus the four detected corners.
 The factor connects one camera variable and one tag variable. Its Jacobians
-are finite differences in the six-dimensional Pose3 tangent space, which keeps
-the first implementation independent of distortion-specific analytic
-derivatives.
+are analytic derivatives in the six-dimensional right-retraction Pose3 tangent
+space. The camera projection derivative includes the configured radtan
+distortion model.
 
 ## Frame Processing
 

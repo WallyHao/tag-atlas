@@ -2,6 +2,7 @@
 
 import logging
 
+from ._version import __version__
 from .camera import CameraModel
 from .localizer import Localizer
 from .logging_utils import configure_logging
@@ -19,5 +20,5 @@ __all__ = [
     "LocalizationResult",
     "Pose",
     "TagMap",
+    "__version__",
 ]
-__version__ = "0.1.0"

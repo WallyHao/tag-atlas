@@ -27,6 +27,12 @@ logger = logging.getLogger(__name__)
 class GtsamGraphError(RuntimeError):
     """A GTSAM graph operation failed at the adapter boundary."""
 
+    def __init__(
+        self, message: str, original_error: RuntimeError | None = None
+    ) -> None:
+        super().__init__(message)
+        self.original_error = original_error
+
 
 @dataclass(frozen=True)
 class ProjectionConstraint:
@@ -66,30 +72,47 @@ def _residual(
     return (projected - constraint.image_corners).reshape(-1)
 
 
-def _numeric_jacobian(
-    pose: Any,
-    other_pose: Any,
+def _skew(vector: FloatArray) -> FloatArray:
+    x, y, z = vector
+    return np.array([[0.0, -z, y], [z, 0.0, -x], [-y, x, 0.0]])
+
+
+def _analytic_residual_and_jacobians(
+    camera_pose: Any,
+    tag_pose: Any,
     constraint: ProjectionConstraint,
     camera: CameraModel,
-    pose_is_camera: bool,
-) -> FloatArray:
-    """Compute a local-coordinate Jacobian for a CustomFactor."""
+) -> tuple[FloatArray, FloatArray, FloatArray]:
+    """Evaluate residuals and analytic right-retraction Jacobians."""
 
-    epsilon = 1e-6
-    result = np.empty((8, 6), dtype=np.float64)
-    for index in range(6):
-        delta = np.zeros(6, dtype=np.float64)
-        delta[index] = epsilon
-        plus = pose.retract(delta)
-        minus = pose.retract(-delta)
-        if pose_is_camera:
-            plus_error = _residual(plus, other_pose, constraint, camera)
-            minus_error = _residual(minus, other_pose, constraint, camera)
-        else:
-            plus_error = _residual(other_pose, plus, constraint, camera)
-            minus_error = _residual(other_pose, minus, constraint, camera)
-        result[:, index] = (plus_error - minus_error) / (2.0 * epsilon)
-    return result
+    points_tag = tag_object_points(constraint.tag_size)
+    rotation_camera = np.asarray(camera_pose.rotation().matrix(), dtype=np.float64)
+    rotation_tag = np.asarray(tag_pose.rotation().matrix(), dtype=np.float64)
+    translation_camera = np.asarray(camera_pose.translation(), dtype=np.float64)
+    translation_tag = np.asarray(tag_pose.translation(), dtype=np.float64)
+    points_world = points_tag @ rotation_tag.T + translation_tag
+    points_camera = (points_world - translation_camera) @ rotation_camera
+    projected, projection_jacobians = camera.project_with_jacobian(points_camera)
+    residual = (projected - constraint.image_corners).reshape(-1)
+
+    camera_point_jacobians = np.empty((4, 3, 6), dtype=np.float64)
+    tag_point_jacobians = np.empty((4, 3, 6), dtype=np.float64)
+    camera_point_jacobians[:, :, :3] = np.array(
+        [_skew(point) for point in points_camera]
+    )
+    camera_point_jacobians[:, :, 3:] = -np.eye(3)
+    world_from_tag = rotation_camera.T @ rotation_tag
+    for index, point in enumerate(points_tag):
+        tag_point_jacobians[index, :, :3] = -world_from_tag @ _skew(point)
+        tag_point_jacobians[index, :, 3:] = world_from_tag
+
+    camera_jacobian = np.vstack(
+        [projection_jacobians[i] @ camera_point_jacobians[i] for i in range(4)]
+    )
+    tag_jacobian = np.vstack(
+        [projection_jacobians[i] @ tag_point_jacobians[i] for i in range(4)]
+    )
+    return residual, camera_jacobian, tag_jacobian
 
 
 class GtsamGraph:
@@ -188,22 +211,12 @@ class GtsamGraph:
         ) -> FloatArray:
             camera_pose = values.atPose3(constraint.camera_key)
             tag_pose = values.atPose3(constraint.tag_key)
-            error = _residual(camera_pose, tag_pose, constraint, self._camera_model)
+            error, camera_jacobian, tag_jacobian = _analytic_residual_and_jacobians(
+                camera_pose, tag_pose, constraint, self._camera_model
+            )
             if jacobians is not None:
-                jacobians[0] = _numeric_jacobian(
-                    camera_pose,
-                    tag_pose,
-                    constraint,
-                    self._camera_model,
-                    pose_is_camera=True,
-                )
-                jacobians[1] = _numeric_jacobian(
-                    tag_pose,
-                    camera_pose,
-                    constraint,
-                    self._camera_model,
-                    pose_is_camera=False,
-                )
+                jacobians[0] = camera_jacobian
+                jacobians[1] = tag_jacobian
             return error
 
         return gtsam.CustomFactor(
@@ -242,8 +255,10 @@ class GtsamGraph:
             estimate = self._isam.calculateEstimate()
             for index in range(factors.size()):
                 self._factor_graph.add(factors.at(index))
-        except Exception as exc:
-            raise GtsamGraphError(f"GTSAM graph update failed: {exc}") from exc
+        except RuntimeError as exc:
+            raise GtsamGraphError(
+                f"GTSAM graph update failed: {exc}", original_error=exc
+            ) from exc
         self._estimate = estimate
         self._known_keys = known_keys
         self._factor_count += len(constraints)
@@ -259,8 +274,10 @@ class GtsamGraph:
 
         try:
             return _from_gtsam_pose(self._estimate.atPose3(key))
-        except Exception as exc:
-            raise GtsamGraphError(f"unable to read GTSAM pose for key {key}") from exc
+        except RuntimeError as exc:
+            raise GtsamGraphError(
+                f"unable to read GTSAM pose for key {key}", original_error=exc
+            ) from exc
 
 
 def _to_gtsam_pose(pose: Pose) -> object:

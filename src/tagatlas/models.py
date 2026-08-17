@@ -25,6 +25,24 @@ def _tag_id(value: object, field_name: str) -> int:
     return int(value)
 
 
+def _parse_tag_id(value: object, field_name: str) -> int:
+    if isinstance(value, str):
+        try:
+            value = int(value.strip())
+        except ValueError as exc:
+            raise ValueError(f"{field_name} must be an integer") from exc
+    return _tag_id(value, field_name)
+
+
+def _float_value(value: object, field_name: str) -> float:
+    if isinstance(value, bool):
+        raise ValueError(f"{field_name} must be a number")
+    try:
+        return float(cast(float | int | str, value))
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{field_name} must be a number") from exc
+
+
 @dataclass(frozen=True)
 class Pose:
     """Rigid transform represented by a rotation matrix and translation."""
@@ -104,6 +122,14 @@ class LocalizationResult:
     reason: str | None = None
 
     def __post_init__(self) -> None:
+        if self.success and self.camera_pose is None:
+            raise ValueError("successful results must include camera_pose")
+        if not self.success and self.camera_pose is not None:
+            raise ValueError("failed results must not include camera_pose")
+        if self.success and self.reprojection_rmse is None:
+            raise ValueError("successful results must include reprojection_rmse")
+        if not self.success and not self.reason:
+            raise ValueError("failed results must include a reason")
         if self.reprojection_rmse is not None and not np.isfinite(
             self.reprojection_rmse
         ):
@@ -125,38 +151,73 @@ class LocalizerConfig:
     robust_scale: float = 1.345
 
     def __post_init__(self) -> None:
+        if not isinstance(self.tag_family, str) or not self.tag_family:
+            raise ValueError("tag_family must be a non-empty string")
+        pixel_noise = _float_value(self.pixel_noise, "pixel_noise")
+        max_error = _float_value(self.max_reprojection_error, "max_reprojection_error")
+        min_margin = _float_value(self.min_decision_margin, "min_decision_margin")
+        min_area = _float_value(self.min_tag_area, "min_tag_area")
+        robust_scale = _float_value(self.robust_scale, "robust_scale")
         finite_positive = (
-            ("pixel_noise", self.pixel_noise),
-            ("max_reprojection_error", self.max_reprojection_error),
-            ("robust_scale", self.robust_scale),
+            ("pixel_noise", pixel_noise),
+            ("max_reprojection_error", max_error),
+            ("robust_scale", robust_scale),
         )
         for name, value in finite_positive:
             if not np.isfinite(value) or value <= 0.0:
                 raise ValueError(f"{name} must be positive and finite")
-        if not np.isfinite(self.min_decision_margin) or self.min_decision_margin < 0.0:
+        if not np.isfinite(min_margin) or min_margin < 0.0:
             raise ValueError("min_decision_margin must not be negative")
-        if not np.isfinite(self.min_tag_area) or self.min_tag_area <= 0.0:
+        if not np.isfinite(min_area) or min_area <= 0.0:
             raise ValueError("min_tag_area must be positive and finite")
+        if not isinstance(self.robust_loss, str):
+            raise ValueError("robust_loss must be a string")
         if self.robust_loss not in {"none", "huber", "cauchy"}:
             raise ValueError("robust_loss must be none, huber, or cauchy")
+        object.__setattr__(self, "pixel_noise", pixel_noise)
+        object.__setattr__(self, "max_reprojection_error", max_error)
+        object.__setattr__(self, "min_decision_margin", min_margin)
+        object.__setattr__(self, "min_tag_area", min_area)
+        object.__setattr__(self, "robust_scale", robust_scale)
 
     @classmethod
     def from_mapping(cls, config: Mapping[str, object]) -> LocalizerConfig:
         """Create configuration from a YAML/JSON-like mapping."""
 
-        family = cast(str, config.get("tag_family", "tag36h11"))
-        pixel_noise = cast(float | str, config.get("pixel_noise", 1.0))
-        max_error = cast(float | str, config.get("max_reprojection_error", 8.0))
-        min_margin = cast(float | str, config.get("min_decision_margin", 0.0))
-        min_area = cast(float | str, config.get("min_tag_area", 16.0))
-        robust_loss = cast(str, config.get("robust_loss", "huber"))
-        robust_scale = cast(float | str, config.get("robust_scale", 1.345))
+        allowed = {
+            "tag_family",
+            "pixel_noise",
+            "max_reprojection_error",
+            "min_decision_margin",
+            "min_tag_area",
+            "robust_loss",
+            "robust_scale",
+        }
+        unknown = set(config) - allowed
+        if unknown:
+            raise ValueError(
+                f"unknown localizer configuration fields: {sorted(unknown)}"
+            )
+        family = config.get("tag_family", "tag36h11")
+        robust_loss = config.get("robust_loss", "huber")
+        if not isinstance(family, str) or not family:
+            raise ValueError("tag_family must be a non-empty string")
+        if not isinstance(robust_loss, str):
+            raise ValueError("robust_loss must be a string")
         return cls(
-            tag_family=str(family),
-            pixel_noise=float(pixel_noise),
-            max_reprojection_error=float(max_error),
-            min_decision_margin=float(min_margin),
-            min_tag_area=float(min_area),
-            robust_loss=str(robust_loss),
-            robust_scale=float(robust_scale),
+            tag_family=family,
+            pixel_noise=_float_value(config.get("pixel_noise", 1.0), "pixel_noise"),
+            max_reprojection_error=_float_value(
+                config.get("max_reprojection_error", 8.0),
+                "max_reprojection_error",
+            ),
+            min_decision_margin=_float_value(
+                config.get("min_decision_margin", 0.0),
+                "min_decision_margin",
+            ),
+            min_tag_area=_float_value(config.get("min_tag_area", 16.0), "min_tag_area"),
+            robust_loss=robust_loss,
+            robust_scale=_float_value(
+                config.get("robust_scale", 1.345), "robust_scale"
+            ),
         )

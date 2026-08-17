@@ -24,3 +24,7 @@ def test_tag_map_rejects_invalid_values() -> None:
         TagMap(reference_tag_id=0, tag_sizes={0: 0.0})
     with pytest.raises(ValueError, match="finite"):
         TagMap(reference_tag_id=0, tag_sizes={0: float("nan")})
+    with pytest.raises(ValueError, match="integer"):
+        TagMap.from_mapping({"tag_sizes": {1.5: 0.12}})
+    with pytest.raises(ValueError, match="unknown"):
+        TagMap.from_mapping({"tag_sizes": {0: 0.12}, "extra": True})

@@ -9,4 +9,7 @@ dist/
 build/
 .coverage
 data/
+!tests/data/
+tests/data/*
+!tests/data/README.md
 .DS_Store

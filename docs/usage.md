@@ -105,6 +105,9 @@ else:
 
 The camera pose is expressed in the reference-Tag world frame. Call `reset()`
 to clear the trajectory and map while keeping calibration and configuration.
+Calls on one `Localizer` instance are serialized and are safe to invoke from
+multiple threads, but frames are still processed in call order. Separate
+instances should be used when independent pipelines are required.
 
 ## Logging
 

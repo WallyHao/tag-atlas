@@ -339,6 +339,37 @@ def test_graph_rebuild_failure_is_reported(monkeypatch: pytest.MonkeyPatch) -> N
     assert "graph rebuild failed: synthetic rebuild failure" in result.reason
 
 
+def test_graph_result_read_failure_is_recovered(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    camera = CameraModel(
+        np.array([[500.0, 0.0, 320.0], [0.0, 500.0, 240.0], [0.0, 0.0, 1.0]])
+    )
+    tag_poses = {0: Pose.identity()}
+    camera_pose = Pose(np.diag([1.0, -1.0, -1.0]), np.array([0.0, 0.0, 1.5]))
+    localizer = Localizer(
+        camera=camera,
+        tag_map=TagMap(reference_tag_id=0, tag_sizes={0: 0.12}),
+        config=LocalizerConfig(),
+        detector=SequenceDetector([make_frame(camera, camera_pose, tag_poses, [0])]),
+    )
+
+    monkeypatch.setattr(
+        localizer._graph,
+        "pose_for_key",
+        lambda _key: (_ for _ in ()).throw(
+            GtsamGraphError("synthetic pose read failure")
+        ),
+    )
+
+    result = localizer.locate(np.zeros((480, 640), dtype=np.uint8))
+
+    assert not result.success
+    assert result.reason is not None
+    assert "result read failed" in result.reason
+    assert localizer.factor_count == 0
+
+
 def test_reprojection_failure_after_optimization_is_rolled_back(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

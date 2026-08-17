@@ -78,6 +78,54 @@ def test_graph_rejects_invalid_robust_configuration() -> None:
         )
 
 
+def test_analytic_factor_jacobians_match_right_retraction_finite_difference() -> None:
+    camera = CameraModel(
+        np.array([[500.0, 0.0, 320.0], [0.0, 510.0, 240.0], [0.0, 0.0, 1.0]]),
+        np.array([0.01, -0.002, 0.001, -0.001, 0.0002]),
+    )
+    camera_pose = pose_graph._to_gtsam_pose(
+        Pose(np.diag([1.0, -1.0, -1.0]), np.array([0.1, -0.05, 1.0]))
+    )
+    tag_pose = pose_graph._to_gtsam_pose(Pose(np.eye(3), np.array([0.2, 0.1, 0.0])))
+    constraint = pose_graph.ProjectionConstraint(
+        camera_key=1,
+        tag_key=2,
+        tag_size=0.12,
+        image_corners=np.array(
+            [[350.0, 250.0], [410.0, 250.0], [410.0, 310.0], [350.0, 310.0]]
+        ),
+    )
+
+    _, camera_jacobian, tag_jacobian = pose_graph._analytic_residual_and_jacobians(
+        camera_pose, tag_pose, constraint, camera
+    )
+    epsilon = 1e-7
+    numeric_camera = np.empty((8, 6))
+    numeric_tag = np.empty((8, 6))
+    for index in range(6):
+        delta = np.zeros(6)
+        delta[index] = epsilon
+        numeric_camera[:, index] = (
+            pose_graph._residual(
+                camera_pose.retract(delta), tag_pose, constraint, camera
+            )
+            - pose_graph._residual(
+                camera_pose.retract(-delta), tag_pose, constraint, camera
+            )
+        ) / (2.0 * epsilon)
+        numeric_tag[:, index] = (
+            pose_graph._residual(
+                camera_pose, tag_pose.retract(delta), constraint, camera
+            )
+            - pose_graph._residual(
+                camera_pose, tag_pose.retract(-delta), constraint, camera
+            )
+        ) / (2.0 * epsilon)
+
+    np.testing.assert_allclose(camera_jacobian, numeric_camera, rtol=1e-5, atol=1e-5)
+    np.testing.assert_allclose(tag_jacobian, numeric_tag, rtol=1e-5, atol=1e-5)
+
+
 def test_graph_update_keeps_state_when_isam_update_fails(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

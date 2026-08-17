@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from threading import RLock
 from typing import Any
 
 from numpy.typing import NDArray
@@ -16,7 +17,7 @@ from .apriltag_detector import (
 )
 from .camera import CameraModel
 from .initialization import seed_camera_pose, seed_tag_pose
-from .metrics import reprojection_rmse
+from .metrics import detection_reprojection_rmse, reprojection_rmse
 from .models import LocalizationResult, LocalizerConfig, Pose
 from .pose_graph import GtsamGraph, GtsamGraphError, ProjectionConstraint
 from .tag_map import TagMap
@@ -50,7 +51,12 @@ class Localizer:
         self.config = config or LocalizerConfig()
         self.camera = camera
         self.tag_map = tag_map
-        self._detector = detector or PupilAprilTagDetector(self.config.tag_family)
+        self._lock = RLock()
+        self._detector = (
+            detector
+            if detector is not None
+            else PupilAprilTagDetector(self.config.tag_family)
+        )
         self._frame_id = 0
         self._last_camera_pose: Pose | None = None
         self._known_tag_poses: dict[int, Pose] = {
@@ -110,16 +116,24 @@ class Localizer:
     def tag_poses(self) -> Mapping[int, Pose]:
         """Return the latest optimized tag map."""
 
-        return dict(self._known_tag_poses)
+        with self._lock:
+            return dict(self._known_tag_poses)
 
     @property
     def factor_count(self) -> int:
         """Return the number of projection factors in the graph."""
 
-        return self._graph.factor_count
+        with self._lock:
+            return self._graph.factor_count
 
     def reset(self) -> None:
-        """Clear the trajectory and discovered map while keeping calibration."""
+        """Clear state while keeping calibration; safe during a concurrent locate."""
+
+        with self._lock:
+            self._reset()
+
+    def _reset(self) -> None:
+        """Reset implementation; caller must hold ``self._lock``."""
 
         self._frame_id = 0
         self._last_camera_pose = None
@@ -172,7 +186,28 @@ class Localizer:
                 update.constraints,
             )
 
+    def _recover_graph_failure(
+        self,
+        frame_id: int,
+        reason: str,
+        used_tag_ids: Sequence[int] = (),
+    ) -> LocalizationResult:
+        """Restore the last committed graph before reporting a graph failure."""
+
+        try:
+            self._rebuild_graph()
+        except GtsamGraphError as rebuild_exc:
+            logger.exception("graph rebuild failed after graph operation failure")
+            reason = f"{reason}; graph rebuild failed: {rebuild_exc}"
+        return self._failure(frame_id, reason, used_tag_ids)
+
     def locate(self, image: NDArray[Any]) -> LocalizationResult:
+        """Process one image; calls are serialized per Localizer instance."""
+
+        with self._lock:
+            return self._locate(image)
+
+    def _locate(self, image: NDArray[Any]) -> LocalizationResult:
         """Process one image and return the optimized camera pose."""
 
         frame_id = self._frame_id
@@ -208,8 +243,8 @@ class Localizer:
         if camera_pose is None:
             return self._failure(frame_id, "unable to initialize camera pose")
 
-        new_tag_poses: list[tuple[int, Pose]] = []
         candidate_tag_poses = dict(self._known_tag_poses)
+        candidate_new_tags: list[tuple[int, Pose]] = []
         for detection in detections:
             if detection.tag_id in candidate_tag_poses:
                 continue
@@ -218,7 +253,38 @@ class Localizer:
             )
             if pose is not None:
                 candidate_tag_poses[detection.tag_id] = pose
-                new_tag_poses.append((detection.tag_id, pose))
+                candidate_new_tags.append((detection.tag_id, pose))
+
+        accepted_detections = tuple(
+            detection
+            for detection in detections
+            if detection.tag_id in candidate_tag_poses
+            and detection_reprojection_rmse(
+                camera_pose,
+                detection,
+                candidate_tag_poses,
+                self.tag_map.tag_sizes,
+                self.camera,
+            )
+            <= self.config.max_reprojection_error
+        )
+        if not accepted_detections:
+            return self._failure(frame_id, "all observations exceed reprojection limit")
+        if not any(
+            detection.tag_id in self._known_tag_poses
+            for detection in accepted_detections
+        ):
+            return self._failure(
+                frame_id,
+                "all mapped observations exceed reprojection limit",
+            )
+        accepted_ids = {detection.tag_id for detection in accepted_detections}
+        new_tag_poses = [item for item in candidate_new_tags if item[0] in accepted_ids]
+        candidate_tag_poses = {
+            tag_id: pose
+            for tag_id, pose in candidate_tag_poses.items()
+            if tag_id in accepted_ids or tag_id == self.tag_map.reference_tag_id
+        }
 
         camera_key = GtsamGraph.camera_key(frame_id)
         constraints = [
@@ -232,11 +298,6 @@ class Localizer:
             if detection.tag_id in candidate_tag_poses
         ]
 
-        accepted_detections = tuple(
-            detection
-            for detection in detections
-            if detection.tag_id in candidate_tag_poses
-        )
         initial_rmse = reprojection_rmse(
             camera_pose,
             accepted_detections,
@@ -267,21 +328,18 @@ class Localizer:
                 exc,
                 exc_info=True,
             )
-            try:
-                self._rebuild_graph()
-            except GtsamGraphError as rebuild_exc:
-                logger.exception("graph rebuild failed after update failure")
-                return self._failure(
-                    frame_id,
-                    f"GTSAM update failed: {exc}; graph rebuild failed: {rebuild_exc}",
-                )
-            return self._failure(frame_id, f"GTSAM update failed: {exc}")
+            return self._recover_graph_failure(frame_id, f"GTSAM update failed: {exc}")
 
-        optimized_camera = self._graph.pose_for_key(camera_key)
-        optimized_tags = dict(self._known_tag_poses)
-        for tag_id in candidate_tag_poses:
-            optimized_tags[tag_id] = self._graph.pose_for_key(
-                GtsamGraph.tag_key(tag_id)
+        try:
+            optimized_camera = self._graph.pose_for_key(camera_key)
+            optimized_tags = dict(self._known_tag_poses)
+            for tag_id in candidate_tag_poses:
+                optimized_tags[tag_id] = self._graph.pose_for_key(
+                    GtsamGraph.tag_key(tag_id)
+                )
+        except GtsamGraphError as exc:
+            return self._recover_graph_failure(
+                frame_id, f"GTSAM result read failed: {exc}"
             )
         used_ids = tuple(
             detection.tag_id
@@ -297,17 +355,7 @@ class Localizer:
         )
         success = rmse <= self.config.max_reprojection_error
         if not success:
-            try:
-                self._rebuild_graph()
-            except GtsamGraphError as rebuild_exc:
-                logger.exception("graph rebuild failed after reprojection rejection")
-                return self._failure(
-                    frame_id,
-                    "reprojection error exceeds configured limit; "
-                    f"graph rebuild failed: {rebuild_exc}",
-                    used_ids,
-                )
-            return self._failure(
+            return self._recover_graph_failure(
                 frame_id,
                 "reprojection error exceeds configured limit",
                 used_ids,

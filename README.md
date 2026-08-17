@@ -58,6 +58,9 @@ The fixed reference Tag defines the world-frame origin. All declared Tag sizes
 are in meters. Call `locate()` on sequential frames and `reset()` to clear the
 trajectory and discovered map.
 
+Calls on one `Localizer` instance are serialized. Use separate instances for
+independent concurrent pipelines.
+
 `CameraModel` supports a 3x3 pinhole matrix and zero to five OpenCV radtan
 distortion coefficients in the order `k1, k2, p1, p2, k3`.
 
