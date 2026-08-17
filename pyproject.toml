@@ -1,0 +1,48 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tagatlas"
+version = "0.1.0"
+description = "Multi-AprilTag spatial localization and pose fusion."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [
+    { name = "TagAtlas Contributors" },
+]
+dependencies = [
+    "numpy>=1.23",
+    "opencv-python>=4.7",
+    "gtsam>=4.2,<5",
+    "pupil-apriltags>=1.0.4",
+]
+
+[dependency-groups]
+dev = [
+    "mypy>=1.11",
+    "pytest>=8",
+    "ruff>=0.5",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+strict_markers = true
+
+[tool.ruff]
+line-length = 88
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+
+[tool.mypy]
+python_version = "3.10"
+files = ["src"]
+strict = true
+ignore_missing_imports = true
