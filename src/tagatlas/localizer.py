@@ -6,26 +6,18 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-import numpy as np
 from numpy.typing import NDArray
 
+from .apriltag_detector import (
+    DetectorProtocol,
+    PupilAprilTagDetector,
+    filter_detections,
+)
 from .camera import CameraModel
-from .detector import DetectorProtocol, PupilAprilTagDetector, normalize_detection
-from .geometry import (
-    compose_pose,
-    inverse_pose,
-    pose_from_pnp,
-    tag_object_points,
-    transform_points,
-)
-from .graph import GtsamGraph, ProjectionConstraint
-from .types import (
-    Detection,
-    FloatArray,
-    LocalizationResult,
-    LocalizerConfig,
-    Pose,
-)
+from .initialization import seed_camera_pose, seed_tag_pose
+from .metrics import reprojection_rmse
+from .models import FloatArray, LocalizationResult, LocalizerConfig, Pose
+from .pose_graph import GtsamGraph, ProjectionConstraint
 
 
 @dataclass(frozen=True)
@@ -51,7 +43,6 @@ class Localizer:
         *,
         reference_tag_id: int = 0,
         tag_family: str = "tag36h11",
-        distortion_model: str = "radtan",
         pixel_noise: float = 1.0,
         max_reprojection_error: float = 8.0,
         min_decision_margin: float = 0.0,
@@ -68,7 +59,6 @@ class Localizer:
         self.camera = CameraModel(
             camera_matrix,
             distortion_coefficients,
-            distortion_model=distortion_model,
         )
         self._detector = detector or PupilAprilTagDetector(tag_family)
         self._frame_id = 0
@@ -104,7 +94,6 @@ class Localizer:
             camera.distortion_coefficients,
             reference_tag_id=parsed.reference_tag_id,
             tag_family=parsed.tag_family,
-            distortion_model=camera.distortion_model,
             pixel_noise=parsed.pixel_noise,
             max_reprojection_error=parsed.max_reprojection_error,
             min_decision_margin=parsed.min_decision_margin,
@@ -158,80 +147,6 @@ class Localizer:
             reason=reason,
         )
 
-    def _detections(self, image: NDArray[Any]) -> tuple[Detection, ...]:
-        raw = self._detector.detect(image)
-        selected: dict[int, Detection] = {}
-        for value in raw:
-            detection = (
-                value if isinstance(value, Detection) else normalize_detection(value)
-            )
-            if detection.tag_family != self.config.tag_family:
-                continue
-            if detection.tag_id not in self.config.tag_sizes:
-                continue
-            if detection.decision_margin < self.config.min_decision_margin:
-                continue
-            previous = selected.get(detection.tag_id)
-            if previous is None or detection.decision_margin > previous.decision_margin:
-                selected[detection.tag_id] = detection
-        return tuple(selected.values())
-
-    def _camera_seed(self, detections: Sequence[Detection]) -> Pose | None:
-        assert self.camera.distortion_coefficients is not None
-        world_points: list[FloatArray] = []
-        image_points: list[FloatArray] = []
-        for detection in detections:
-            tag_pose = self._known_tag_poses.get(detection.tag_id)
-            if tag_pose is None:
-                continue
-            local_points = tag_object_points(self.config.tag_sizes[detection.tag_id])
-            world_points.append(transform_points(tag_pose, local_points))
-            image_points.append(detection.corners)
-        if not world_points:
-            return None
-        camera_from_world = pose_from_pnp(
-            np.vstack(world_points),
-            np.vstack(image_points),
-            self.camera.matrix,
-            self.camera.distortion_coefficients,
-        )
-        if camera_from_world is None:
-            return self._last_camera_pose
-        return inverse_pose(camera_from_world)
-
-    def _new_tag_seed(self, detection: Detection, camera_pose: Pose) -> Pose | None:
-        assert self.camera.distortion_coefficients is not None
-        local_points = tag_object_points(self.config.tag_sizes[detection.tag_id])
-        camera_from_tag = pose_from_pnp(
-            local_points,
-            detection.corners,
-            self.camera.matrix,
-            self.camera.distortion_coefficients,
-        )
-        if camera_from_tag is None:
-            return None
-        return compose_pose(camera_pose, camera_from_tag)
-
-    def _rmse(
-        self,
-        camera_pose: Pose,
-        detections: Sequence[Detection],
-        tag_poses: Mapping[int, Pose],
-    ) -> float:
-        camera_from_world = inverse_pose(camera_pose)
-        errors: list[FloatArray] = []
-        for detection in detections:
-            tag_pose = tag_poses[detection.tag_id]
-            points_world = transform_points(
-                tag_pose, tag_object_points(self.config.tag_sizes[detection.tag_id])
-            )
-            points_camera = transform_points(camera_from_world, points_world)
-            predicted = self.camera.project(points_camera)
-            errors.append((predicted - detection.corners).reshape(-1))
-        if not errors:
-            return float("inf")
-        return float(np.sqrt(np.mean(np.concatenate(errors) ** 2)))
-
     def _rebuild_graph(self) -> None:
         self._graph = GtsamGraph(
             self.config.reference_tag_id,
@@ -251,7 +166,12 @@ class Localizer:
 
         frame_id = self._frame_id
         self._frame_id += 1
-        detections = self._detections(image)
+        detections = filter_detections(
+            self._detector.detect(image),
+            tag_family=self.config.tag_family,
+            tag_sizes=self.config.tag_sizes,
+            min_decision_margin=self.config.min_decision_margin,
+        )
         if not detections:
             return self._failure(frame_id, "no configured AprilTags detected")
 
@@ -265,7 +185,13 @@ class Localizer:
                 frame_id,
                 "observations are not connected to the current tag map",
             )
-        camera_pose = self._camera_seed(known_detections)
+        camera_pose = seed_camera_pose(
+            known_detections,
+            self._known_tag_poses,
+            self.config.tag_sizes,
+            self.camera,
+            fallback=self._last_camera_pose,
+        )
         if camera_pose is None:
             return self._failure(frame_id, "unable to initialize camera pose")
 
@@ -274,7 +200,9 @@ class Localizer:
         for detection in detections:
             if detection.tag_id in candidate_tag_poses:
                 continue
-            pose = self._new_tag_seed(detection, camera_pose)
+            pose = seed_tag_pose(
+                detection, camera_pose, self.config.tag_sizes, self.camera
+            )
             if pose is not None:
                 candidate_tag_poses[detection.tag_id] = pose
                 new_tag_poses.append((detection.tag_id, pose))
@@ -298,7 +226,13 @@ class Localizer:
             for detection in detections
             if detection.tag_id in candidate_tag_poses
         )
-        initial_rmse = self._rmse(camera_pose, accepted_detections, candidate_tag_poses)
+        initial_rmse = reprojection_rmse(
+            camera_pose,
+            accepted_detections,
+            candidate_tag_poses,
+            self.config.tag_sizes,
+            self.camera,
+        )
         if initial_rmse > self.config.max_reprojection_error:
             return self._failure(
                 frame_id,
@@ -330,7 +264,13 @@ class Localizer:
             for detection in accepted_detections
             if detection.tag_id in optimized_tags
         )
-        rmse = self._rmse(optimized_camera, accepted_detections, optimized_tags)
+        rmse = reprojection_rmse(
+            optimized_camera,
+            accepted_detections,
+            optimized_tags,
+            self.config.tag_sizes,
+            self.camera,
+        )
         success = rmse <= self.config.max_reprojection_error
         if not success:
             self._rebuild_graph()

@@ -5,7 +5,7 @@ from __future__ import annotations
 import cv2
 import numpy as np
 
-from .types import FloatArray, Pose
+from .models import FloatArray, Pose
 
 
 def tag_object_points(size: float) -> FloatArray:
@@ -73,12 +73,15 @@ def pose_from_pnp(
     image_values = np.asarray(image_points, dtype=np.float64)
     if object_values.shape[0] != image_values.shape[0] or object_values.shape[0] < 4:
         raise ValueError("PnP requires at least four matching points")
+    pnp_matrix: FloatArray = np.asarray(camera_matrix, dtype=np.float64)
+    pnp_distortion: FloatArray = np.asarray(distortion_coefficients, dtype=np.float64)
+
     try:
         success, rvec, tvec = cv2.solvePnP(
             object_values,
             image_values,
-            camera_matrix,
-            distortion_coefficients,
+            pnp_matrix,
+            pnp_distortion,
             flags=cv2.SOLVEPNP_ITERATIVE,
         )
     except cv2.error:
@@ -90,8 +93,8 @@ def pose_from_pnp(
             success, rvec, tvec = cv2.solvePnP(
                 object_values,
                 image_values,
-                camera_matrix,
-                distortion_coefficients,
+                pnp_matrix,
+                pnp_distortion,
                 flags=cv2.SOLVEPNP_IPPE,
             )
         except cv2.error:

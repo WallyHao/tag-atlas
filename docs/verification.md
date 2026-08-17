@@ -46,7 +46,9 @@ frames and rerun pupil-apriltags for an end-to-end detector regression.
 Full bags should remain external test data because of their size. A small,
 versioned subset of images, detections, calibration, and expected poses should
 be stored under `tests/data` with source URL, commit/version, checksum, and
-license information.
+license information. The repository currently has no checked-in or local
+external dataset dependency; the default test suite is synthetic and self-
+contained.
 
 ## Quality Gates
 

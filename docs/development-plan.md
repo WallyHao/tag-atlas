@@ -15,7 +15,7 @@ as observations connect them to the existing map.
 - Development checks are Ruff, Pytest, and strict Mypy.
 - `Pose`, `Detection`, `CameraModel`, and `LocalizerConfig` are typed public
   data structures.
-- Camera projection supports OpenCV-style radtan and equidistant distortion.
+- Camera projection supports OpenCV-style radtan distortion.
 - The GTSAM graph uses `Pose3` values, a fixed reference-tag prior, and
   incremental `ISAM2` updates.
 - A tag observation is represented by one eight-dimensional custom factor for

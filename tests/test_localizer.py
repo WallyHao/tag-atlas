@@ -148,7 +148,7 @@ def test_detector_adapter_accepts_pupil_style_objects() -> None:
         decision_margin=12.0,
         hamming=1,
     )
-    from tagatlas.detector import normalize_detection
+    from tagatlas.apriltag_detector import normalize_detection
 
     detection = normalize_detection(value)
     assert detection.tag_id == 4

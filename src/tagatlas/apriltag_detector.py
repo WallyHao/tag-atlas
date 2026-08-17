@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Any, Protocol
 
 import cv2
 import numpy as np
 
-from .types import Detection
+from .models import Detection
 
 
 class DetectorProtocol(Protocol):
@@ -34,6 +34,32 @@ def normalize_detection(value: Any) -> Detection:
         decision_margin=float(getattr(value, "decision_margin", 0.0)),
         hamming=int(getattr(value, "hamming", 0)),
     )
+
+
+def filter_detections(
+    values: Sequence[Any],
+    *,
+    tag_family: str,
+    tag_sizes: Mapping[int, float],
+    min_decision_margin: float,
+) -> tuple[Detection, ...]:
+    """Normalize and filter detections accepted by the localizer."""
+
+    selected: dict[int, Detection] = {}
+    for value in values:
+        detection = (
+            value if isinstance(value, Detection) else normalize_detection(value)
+        )
+        if detection.tag_family != tag_family:
+            continue
+        if detection.tag_id not in tag_sizes:
+            continue
+        if detection.decision_margin < min_decision_margin:
+            continue
+        previous = selected.get(detection.tag_id)
+        if previous is None or detection.decision_margin > previous.decision_margin:
+            selected[detection.tag_id] = detection
+    return tuple(selected.values())
 
 
 class PupilAprilTagDetector:

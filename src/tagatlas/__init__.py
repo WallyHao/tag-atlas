@@ -2,7 +2,7 @@
 
 from .camera import CameraModel
 from .localizer import Localizer
-from .types import Detection, LocalizationResult, LocalizerConfig, Pose
+from .models import Detection, LocalizationResult, LocalizerConfig, Pose
 
 __all__ = [
     "CameraModel",

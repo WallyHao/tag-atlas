@@ -10,7 +10,7 @@ import numpy as np
 
 from .camera import CameraModel
 from .geometry import tag_object_points
-from .types import FloatArray, Pose
+from .models import FloatArray, Pose
 
 gtsam: Any = None
 try:

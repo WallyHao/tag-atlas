@@ -40,6 +40,19 @@ are held out of the graph.
 ## Package layout
 
 ```text
-src/tagatlas/     Library source
-tests/            Automated tests
+src/tagatlas/
+  models.py              Public data models
+  camera.py              Camera calibration and projection
+  geometry.py            SE(3), tag geometry, and PnP
+  apriltag_detector.py   AprilTag detector adapter and filtering
+  initialization.py      PnP pose seeding
+  metrics.py             Reprojection quality metrics
+  pose_graph.py          GTSAM incremental graph
+  localizer.py           Localization pipeline facade
+tests/                   Automated tests
+docs/                    Architecture and verification notes
 ```
+
+Large external datasets are not stored in the repository. Reproducible
+regressions should use small fixtures under `tests/data` and document their
+source and checksum.

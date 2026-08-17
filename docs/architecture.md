@@ -17,6 +17,17 @@ is `T_camera_tag`. The projection chain is:
 T_camera_tag = inverse(T_world_camera) @ T_world_tag
 ```
 
+## Module Boundaries
+
+- `models.py` contains public immutable data models and shared array types.
+- `camera.py` owns calibration validation and radtan projection.
+- `geometry.py` owns rigid transforms, tag corner geometry, and OpenCV PnP.
+- `apriltag_detector.py` adapts and filters detector output.
+- `initialization.py` creates camera and new-tag pose seeds.
+- `metrics.py` computes localization quality metrics.
+- `pose_graph.py` owns GTSAM variables, factors, and incremental updates.
+- `localizer.py` coordinates the processing pipeline and exposes the public API.
+
 Each tag has local corners at `(+/-size/2, +/-size/2, 0)`. The corner order
 matches pupil-apriltags' counter-clockwise output.
 
