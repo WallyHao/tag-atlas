@@ -54,6 +54,7 @@ contained.
 
 - Noisy synthetic sequences must remain below a documented pose-error and
   reprojection-error threshold.
+- `uv run pytest` must maintain at least 90% source coverage.
 - Rejected frames must not change the public map.
 - A new tag must be added only after a connected initialization succeeds.
 - Repeated optimization must not change the fixed reference tag pose.

@@ -16,7 +16,7 @@ from .apriltag_detector import (
 from .camera import CameraModel
 from .initialization import seed_camera_pose, seed_tag_pose
 from .metrics import reprojection_rmse
-from .models import FloatArray, LocalizationResult, LocalizerConfig, Pose
+from .models import LocalizationResult, LocalizerConfig, Pose
 from .pose_graph import GtsamGraph, ProjectionConstraint
 
 
@@ -37,30 +37,14 @@ class Localizer:
 
     def __init__(
         self,
-        tag_sizes: Mapping[int, float],
-        camera_matrix: FloatArray,
-        distortion_coefficients: FloatArray | None = None,
+        config: LocalizerConfig,
+        camera: CameraModel,
         *,
-        reference_tag_id: int = 0,
-        tag_family: str = "tag36h11",
-        pixel_noise: float = 1.0,
-        max_reprojection_error: float = 8.0,
-        min_decision_margin: float = 0.0,
         detector: DetectorProtocol | Any | None = None,
     ) -> None:
-        self.config = LocalizerConfig(
-            reference_tag_id=reference_tag_id,
-            tag_sizes=tag_sizes,
-            tag_family=tag_family,
-            pixel_noise=pixel_noise,
-            max_reprojection_error=max_reprojection_error,
-            min_decision_margin=min_decision_margin,
-        )
-        self.camera = CameraModel(
-            camera_matrix,
-            distortion_coefficients,
-        )
-        self._detector = detector or PupilAprilTagDetector(tag_family)
+        self.config = config
+        self.camera = camera
+        self._detector = detector or PupilAprilTagDetector(config.tag_family)
         self._frame_id = 0
         self._last_camera_pose: Pose | None = None
         self._known_tag_poses: dict[int, Pose] = {
@@ -81,7 +65,7 @@ class Localizer:
         *,
         detector: DetectorProtocol | Any | None = None,
     ) -> Localizer:
-        """Construct a localizer from a config mapping and camera model."""
+        """Construct a localizer from typed or mapping configuration."""
 
         parsed = (
             config
@@ -89,14 +73,8 @@ class Localizer:
             else LocalizerConfig.from_mapping(config)
         )
         return cls(
-            parsed.tag_sizes,
-            camera.matrix,
-            camera.distortion_coefficients,
-            reference_tag_id=parsed.reference_tag_id,
-            tag_family=parsed.tag_family,
-            pixel_noise=parsed.pixel_noise,
-            max_reprojection_error=parsed.max_reprojection_error,
-            min_decision_margin=parsed.min_decision_margin,
+            parsed,
+            camera,
             detector=detector,
         )
 
@@ -218,8 +196,6 @@ class Localizer:
             for detection in detections
             if detection.tag_id in candidate_tag_poses
         ]
-        if not constraints:
-            return self._failure(frame_id, "no valid projection factors to add")
 
         accepted_detections = tuple(
             detection
