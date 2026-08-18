@@ -7,7 +7,7 @@ name = "tagatlas"
 dynamic = ["version"]
 description = "Multi-AprilTag spatial localization and pose fusion."
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 license = "MIT"
 authors = [
     { name = "TagAtlas Contributors" },
@@ -41,14 +41,14 @@ addopts = "-ra --cov=tagatlas --cov-branch --cov-report=term-missing --cov-fail-
 
 [tool.ruff]
 line-length = 88
-target-version = "py310"
+target-version = "py311"
 extend-exclude = ["data"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP"]
 
 [tool.mypy]
-python_version = "3.10"
+python_version = "3.11"
 files = ["src"]
 strict = true
 ignore_missing_imports = true
