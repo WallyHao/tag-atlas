@@ -66,6 +66,11 @@ distortion coefficients in the order `k1, k2, p1, p2, k3`.
 
 The default detector uses `pupil-apriltags`; a custom implementation can be
 injected through the `detector` argument when constructing `Localizer`.
+Localization always returns a `LocalizationResult`: a frame with no configured
+Tag is reported through `reason` and `diagnostics` rather than treated as an
+exception. Use `TagMap.to_json()` and `TagMap.from_json()` to persist a map, and
+set `LocalizerConfig(map_mode="fixed")` to use saved Tag poses without map
+discovery.
 
 ## Package Layout
 
@@ -85,3 +90,6 @@ tests/                   Automated tests
 ```
 
 See [`docs/usage.md`](docs/usage.md) for the complete workflow.
+
+See [`examples/README.md`](examples/README.md) for a live online mapping
+example with visualization.

@@ -118,6 +118,10 @@ class PupilAprilTagDetector:
         )
 
     def detect(self, image: np.ndarray[Any, Any]) -> Sequence[Detection]:
+        if not isinstance(image, np.ndarray) or image.size == 0:
+            raise ValueError("image must be a non-empty NumPy array")
+        if not np.issubdtype(image.dtype, np.number) or not np.isfinite(image).all():
+            raise ValueError("image must contain finite numeric values")
         if image.ndim == 2:
             gray = image
         elif image.ndim == 3 and image.shape[2] in {3, 4}:

@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 def tag_object_points(size: float) -> FloatArray:
     """Return tag corners in the detector's counter-clockwise order."""
 
-    if size <= 0.0:
+    if not np.isfinite(size) or size <= 0.0:
         raise ValueError("tag size must be positive")
     half = size / 2.0
     return np.array(

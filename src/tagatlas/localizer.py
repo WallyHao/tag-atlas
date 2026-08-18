@@ -18,7 +18,13 @@ from .apriltag_detector import (
 from .camera import CameraModel
 from .initialization import seed_camera_pose, seed_tag_pose
 from .metrics import detection_reprojection_rmse, reprojection_rmse
-from .models import LocalizationResult, LocalizerConfig, Pose
+from .models import (
+    Detection,
+    LocalizationDiagnostics,
+    LocalizationResult,
+    LocalizerConfig,
+    Pose,
+)
 from .pose_graph import GtsamGraph, GtsamGraphError, ProjectionConstraint
 from .tag_map import TagMap
 
@@ -31,6 +37,27 @@ class _GraphUpdate:
     camera_initial: Pose
     new_tags: tuple[tuple[int, Pose], ...]
     constraints: tuple[ProjectionConstraint, ...]
+
+
+def _detection_reprojection_rmses(
+    camera_pose: Pose,
+    detections: Sequence[Detection],
+    tag_poses: Mapping[int, Pose],
+    tag_sizes: Mapping[int, float],
+    camera: CameraModel,
+) -> dict[int, float]:
+    """Return one pixel RMSE per Tag detection in a single projection pass."""
+
+    return {
+        detection.tag_id: detection_reprojection_rmse(
+            camera_pose,
+            detection,
+            tag_poses,
+            tag_sizes,
+            camera,
+        )
+        for detection in detections
+    }
 
 
 class Localizer:
@@ -55,13 +82,22 @@ class Localizer:
         self._detector = (
             detector
             if detector is not None
-            else PupilAprilTagDetector(self.config.tag_family)
+            else PupilAprilTagDetector(
+                families=self.config.tag_family,
+                nthreads=self.config.detector.nthreads,
+                quad_decimate=self.config.detector.quad_decimate,
+                quad_sigma=self.config.detector.quad_sigma,
+                refine_edges=self.config.detector.refine_edges,
+                decode_sharpening=self.config.detector.decode_sharpening,
+            )
         )
         self._frame_id = 0
         self._last_camera_pose: Pose | None = None
         self._known_tag_poses: dict[int, Pose] = {
             self.tag_map.reference_tag_id: Pose.identity()
         }
+        if self.config.map_mode == "fixed":
+            self._known_tag_poses.update(self.tag_map.tag_poses)
         self._accepted_updates: list[_GraphUpdate] = []
         self._graph = GtsamGraph(
             self.tag_map.reference_tag_id,
@@ -138,6 +174,8 @@ class Localizer:
         self._frame_id = 0
         self._last_camera_pose = None
         self._known_tag_poses = {self.tag_map.reference_tag_id: Pose.identity()}
+        if self.config.map_mode == "fixed":
+            self._known_tag_poses.update(self.tag_map.tag_poses)
         self._accepted_updates = []
         self._graph = GtsamGraph(
             self.tag_map.reference_tag_id,
@@ -153,6 +191,7 @@ class Localizer:
         frame_id: int,
         reason: str,
         used_tag_ids: Sequence[int] = (),
+        diagnostics: LocalizationDiagnostics | None = None,
     ) -> LocalizationResult:
         logger.debug(
             "frame rejected frame_id=%d reason=%s used_tag_ids=%s",
@@ -168,6 +207,7 @@ class Localizer:
             used_tag_ids=tuple(used_tag_ids),
             reprojection_rmse=None,
             reason=reason,
+            diagnostics=diagnostics or LocalizationDiagnostics(),
         )
 
     def _rebuild_graph(self) -> None:
@@ -219,9 +259,17 @@ class Localizer:
             min_decision_margin=self.config.min_decision_margin,
             min_tag_area=self.config.min_tag_area,
         )
+        diagnostics = LocalizationDiagnostics(
+            detected_count=len(detections),
+            configured_count=len(detections),
+        )
         logger.debug("processing frame_id=%d detections=%d", frame_id, len(detections))
         if not detections:
-            return self._failure(frame_id, "no configured AprilTags detected")
+            return self._failure(
+                frame_id,
+                "no configured AprilTags detected",
+                diagnostics=diagnostics,
+            )
 
         known_detections = tuple(
             detection
@@ -232,6 +280,7 @@ class Localizer:
             return self._failure(
                 frame_id,
                 "observations are not connected to the current tag map",
+                diagnostics=diagnostics,
             )
         camera_pose = seed_camera_pose(
             known_detections,
@@ -241,35 +290,59 @@ class Localizer:
             fallback=self._last_camera_pose,
         )
         if camera_pose is None:
-            return self._failure(frame_id, "unable to initialize camera pose")
+            return self._failure(
+                frame_id, "unable to initialize camera pose", diagnostics=diagnostics
+            )
 
         candidate_tag_poses = dict(self._known_tag_poses)
         candidate_new_tags: list[tuple[int, Pose]] = []
-        for detection in detections:
-            if detection.tag_id in candidate_tag_poses:
-                continue
-            pose = seed_tag_pose(
-                detection, camera_pose, self.tag_map.tag_sizes, self.camera
-            )
-            if pose is not None:
-                candidate_tag_poses[detection.tag_id] = pose
-                candidate_new_tags.append((detection.tag_id, pose))
+        if self.config.map_mode == "fixed":
+            candidate_new_tags = [
+                (tag_id, pose)
+                for tag_id, pose in self.tag_map.tag_poses.items()
+                if GtsamGraph.tag_key(tag_id) not in self._graph.known_keys
+            ]
+        else:
+            for detection in detections:
+                if detection.tag_id in candidate_tag_poses:
+                    continue
+                pose = seed_tag_pose(
+                    detection, camera_pose, self.tag_map.tag_sizes, self.camera
+                )
+                if pose is not None:
+                    candidate_tag_poses[detection.tag_id] = pose
+                    candidate_new_tags.append((detection.tag_id, pose))
 
+        detection_rmses = _detection_reprojection_rmses(
+            camera_pose,
+            detections,
+            candidate_tag_poses,
+            self.tag_map.tag_sizes,
+            self.camera,
+        )
         accepted_detections = tuple(
             detection
             for detection in detections
             if detection.tag_id in candidate_tag_poses
-            and detection_reprojection_rmse(
-                camera_pose,
-                detection,
-                candidate_tag_poses,
-                self.tag_map.tag_sizes,
-                self.camera,
-            )
-            <= self.config.max_reprojection_error
+            and detection_rmses[detection.tag_id] <= self.config.max_reprojection_error
+        )
+        diagnostics = LocalizationDiagnostics(
+            detected_count=len(detections),
+            configured_count=len(detections),
+            accepted_count=len(accepted_detections),
+            rejected_tag_ids=tuple(
+                detection.tag_id
+                for detection in detections
+                if detection not in accepted_detections
+            ),
+            new_tag_ids=tuple(tag_id for tag_id, _pose in candidate_new_tags),
         )
         if not accepted_detections:
-            return self._failure(frame_id, "all observations exceed reprojection limit")
+            return self._failure(
+                frame_id,
+                "all observations exceed reprojection limit",
+                diagnostics=diagnostics,
+            )
         if not any(
             detection.tag_id in self._known_tag_poses
             for detection in accepted_detections
@@ -277,14 +350,16 @@ class Localizer:
             return self._failure(
                 frame_id,
                 "all mapped observations exceed reprojection limit",
+                diagnostics=diagnostics,
             )
         accepted_ids = {detection.tag_id for detection in accepted_detections}
         new_tag_poses = [item for item in candidate_new_tags if item[0] in accepted_ids]
-        candidate_tag_poses = {
-            tag_id: pose
-            for tag_id, pose in candidate_tag_poses.items()
-            if tag_id in accepted_ids or tag_id == self.tag_map.reference_tag_id
-        }
+        if self.config.map_mode == "discover":
+            candidate_tag_poses = {
+                tag_id: pose
+                for tag_id, pose in candidate_tag_poses.items()
+                if tag_id in accepted_ids or tag_id == self.tag_map.reference_tag_id
+            }
 
         camera_key = GtsamGraph.camera_key(frame_id)
         constraints = [
@@ -294,23 +369,9 @@ class Localizer:
                 tag_size=self.tag_map.tag_sizes[detection.tag_id],
                 image_corners=detection.corners,
             )
-            for detection in detections
+            for detection in accepted_detections
             if detection.tag_id in candidate_tag_poses
         ]
-
-        initial_rmse = reprojection_rmse(
-            camera_pose,
-            accepted_detections,
-            candidate_tag_poses,
-            self.tag_map.tag_sizes,
-            self.camera,
-        )
-        if initial_rmse > self.config.max_reprojection_error:
-            return self._failure(
-                frame_id,
-                "initial reprojection error exceeds configured limit",
-                [detection.tag_id for detection in accepted_detections],
-            )
 
         update = _GraphUpdate(
             camera_key=camera_key,
@@ -332,15 +393,26 @@ class Localizer:
 
         try:
             optimized_camera = self._graph.pose_for_key(camera_key)
+            pose_covariance = self._graph.pose_covariance_for_key(camera_key)
             optimized_tags = dict(self._known_tag_poses)
             for tag_id in candidate_tag_poses:
                 optimized_tags[tag_id] = self._graph.pose_for_key(
                     GtsamGraph.tag_key(tag_id)
                 )
         except GtsamGraphError as exc:
-            return self._recover_graph_failure(
-                frame_id, f"GTSAM result read failed: {exc}"
-            )
+            if "covariance" in str(exc):
+                pose_covariance = None
+                logger.debug("camera covariance unavailable: %s", exc)
+                optimized_camera = self._graph.pose_for_key(camera_key)
+                optimized_tags = dict(self._known_tag_poses)
+                for tag_id in candidate_tag_poses:
+                    optimized_tags[tag_id] = self._graph.pose_for_key(
+                        GtsamGraph.tag_key(tag_id)
+                    )
+            else:
+                return self._recover_graph_failure(
+                    frame_id, f"GTSAM result read failed: {exc}"
+                )
         used_ids = tuple(
             detection.tag_id
             for detection in accepted_detections
@@ -377,4 +449,21 @@ class Localizer:
             used_tag_ids=used_ids,
             reprojection_rmse=rmse,
             reason=None if success else "reprojection error exceeds configured limit",
+            pose_covariance=pose_covariance,
+            diagnostics=LocalizationDiagnostics(
+                detected_count=len(detections),
+                configured_count=len(detections),
+                accepted_count=len(accepted_detections),
+                used_tag_ids=used_ids,
+                rejected_tag_ids=tuple(
+                    detection.tag_id
+                    for detection in detections
+                    if detection not in accepted_detections
+                ),
+                new_tag_ids=(
+                    tuple(tag_id for tag_id, _pose in new_tag_poses)
+                    if self.config.map_mode == "discover"
+                    else ()
+                ),
+            ),
         )

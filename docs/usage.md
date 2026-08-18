@@ -55,6 +55,13 @@ tag_map = TagMap.from_mapping(
 )
 ```
 
+Maps can be persisted as versioned JSON, including discovered Tag poses:
+
+```python
+tag_map.to_json("tag-map.json")
+tag_map = TagMap.from_json("tag-map.json")
+```
+
 ## Configure The Localizer
 
 `LocalizerConfig` contains algorithm parameters only:
@@ -69,8 +76,14 @@ config = LocalizerConfig(
     min_tag_area=16.0,
     robust_loss="huber",
     robust_scale=1.345,
+    map_mode="discover",
 )
 ```
+
+Use `map_mode="fixed"` with a map containing Tag poses to localize against a
+previously saved map without discovering or changing Tag poses. Detector
+parameters are configured through `DetectorConfig` or the nested `detector`
+mapping.
 
 It can also be loaded from a mapping with `LocalizerConfig.from_mapping()`.
 
@@ -99,8 +112,10 @@ if result.success:
     print("mapped tags:", result.tag_poses.keys())
     print("used tags:", result.used_tag_ids)
     print("pixel RMSE:", result.reprojection_rmse)
+    print("pose covariance:", result.pose_covariance)
 else:
     print("rejected:", result.reason)
+    print("feedback:", result.diagnostics)
 ```
 
 The camera pose is expressed in the reference-Tag world frame. Call `reset()`

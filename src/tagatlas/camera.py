@@ -18,14 +18,15 @@ class CameraModel:
     distortion_coefficients: FloatArray | None = None
 
     def __post_init__(self) -> None:
-        matrix = np.asarray(self.matrix, dtype=np.float64)
+        matrix = np.array(self.matrix, dtype=np.float64, copy=True)
         if matrix.shape != (3, 3):
             raise ValueError("camera matrix must have shape (3, 3)")
-        distortion = np.asarray(
+        distortion = np.array(
             self.distortion_coefficients
             if self.distortion_coefficients is not None
             else np.empty(0),
             dtype=np.float64,
+            copy=True,
         ).reshape(-1)
         if distortion.size > 5:
             raise ValueError("radtan distortion accepts at most five coefficients")

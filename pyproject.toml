@@ -17,6 +17,7 @@ dependencies = [
     "opencv-python>=4.7",
     "gtsam>=4.2,<5",
     "pupil-apriltags>=1.0.4",
+    "matplotlib>=3.7",
 ]
 
 [dependency-groups]

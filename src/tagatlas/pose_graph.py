@@ -27,9 +27,7 @@ logger = logging.getLogger(__name__)
 class GtsamGraphError(RuntimeError):
     """A GTSAM graph operation failed at the adapter boundary."""
 
-    def __init__(
-        self, message: str, original_error: RuntimeError | None = None
-    ) -> None:
+    def __init__(self, message: str, original_error: Exception | None = None) -> None:
         super().__init__(message)
         self.original_error = original_error
 
@@ -47,6 +45,10 @@ class ProjectionConstraint:
         corners = np.asarray(self.image_corners, dtype=np.float64)
         if corners.shape != (4, 2):
             raise ValueError("image_corners must have shape (4, 2)")
+        if not np.isfinite(corners).all():
+            raise ValueError("image_corners must contain finite values")
+        if not np.isfinite(self.tag_size) or self.tag_size <= 0.0:
+            raise ValueError("tag_size must be positive and finite")
         object.__setattr__(self, "image_corners", corners.copy())
 
 
@@ -278,6 +280,21 @@ class GtsamGraph:
             raise GtsamGraphError(
                 f"unable to read GTSAM pose for key {key}", original_error=exc
             ) from exc
+
+    def pose_covariance_for_key(self, key: int) -> FloatArray:
+        """Return the marginal covariance for a Pose3 key."""
+
+        try:
+            covariance = np.asarray(
+                self._isam.marginalCovariance(key), dtype=np.float64
+            )
+        except (RuntimeError, TypeError, ValueError) as exc:
+            raise GtsamGraphError(
+                f"unable to read GTSAM covariance for key {key}", original_error=exc
+            ) from exc
+        if covariance.shape != (6, 6) or not np.isfinite(covariance).all():
+            raise GtsamGraphError(f"invalid GTSAM covariance for key {key}")
+        return covariance
 
 
 def _to_gtsam_pose(pose: Pose) -> object:

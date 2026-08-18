@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import cast
 
@@ -110,6 +110,40 @@ class Detection:
 
 
 @dataclass(frozen=True)
+class LocalizationDiagnostics:
+    """Structured feedback about one localization attempt."""
+
+    detected_count: int = 0
+    configured_count: int = 0
+    accepted_count: int = 0
+    used_tag_ids: tuple[int, ...] = ()
+    rejected_tag_ids: tuple[int, ...] = ()
+    new_tag_ids: tuple[int, ...] = ()
+
+    def __post_init__(self) -> None:
+        counts = (
+            ("detected_count", self.detected_count),
+            ("configured_count", self.configured_count),
+            ("accepted_count", self.accepted_count),
+        )
+        for name, value in counts:
+            if isinstance(value, bool) or not isinstance(value, (int, np.integer)):
+                raise ValueError(f"{name} must be a non-negative integer")
+            if value < 0:
+                raise ValueError(f"{name} must be a non-negative integer")
+        if self.configured_count > self.detected_count:
+            raise ValueError("configured_count cannot exceed detected_count")
+        if self.accepted_count > self.configured_count:
+            raise ValueError("accepted_count cannot exceed configured_count")
+        object.__setattr__(self, "detected_count", int(self.detected_count))
+        object.__setattr__(self, "configured_count", int(self.configured_count))
+        object.__setattr__(self, "accepted_count", int(self.accepted_count))
+        object.__setattr__(self, "used_tag_ids", tuple(self.used_tag_ids))
+        object.__setattr__(self, "rejected_tag_ids", tuple(self.rejected_tag_ids))
+        object.__setattr__(self, "new_tag_ids", tuple(self.new_tag_ids))
+
+
+@dataclass(frozen=True)
 class LocalizationResult:
     """Result of processing one image."""
 
@@ -120,6 +154,8 @@ class LocalizationResult:
     used_tag_ids: tuple[int, ...]
     reprojection_rmse: float | None
     reason: str | None = None
+    diagnostics: LocalizationDiagnostics = LocalizationDiagnostics()
+    pose_covariance: FloatArray | None = None
 
     def __post_init__(self) -> None:
         if self.success and self.camera_pose is None:
@@ -134,8 +170,46 @@ class LocalizationResult:
             self.reprojection_rmse
         ):
             raise ValueError("reprojection_rmse must be finite when provided")
+        if self.pose_covariance is not None:
+            covariance = np.asarray(self.pose_covariance, dtype=np.float64)
+            if covariance.shape != (6, 6):
+                raise ValueError("pose_covariance must have shape (6, 6)")
+            if not np.isfinite(covariance).all():
+                raise ValueError("pose_covariance must contain finite values")
+            object.__setattr__(self, "pose_covariance", _readonly_array(covariance))
         object.__setattr__(self, "tag_poses", MappingProxyType(dict(self.tag_poses)))
         object.__setattr__(self, "used_tag_ids", tuple(self.used_tag_ids))
+
+
+@dataclass(frozen=True)
+class DetectorConfig:
+    """Configuration passed to the default pupil-apriltags detector."""
+
+    nthreads: int = 1
+    quad_decimate: float = 1.0
+    quad_sigma: float = 0.0
+    refine_edges: int = 1
+    decode_sharpening: float = 0.25
+
+    def __post_init__(self) -> None:
+        if isinstance(self.nthreads, bool) or self.nthreads < 1:
+            raise ValueError("nthreads must be a positive integer")
+        if isinstance(self.refine_edges, bool) or self.refine_edges not in {0, 1}:
+            raise ValueError("refine_edges must be 0 or 1")
+        values = (
+            ("quad_decimate", self.quad_decimate, 0.0),
+            ("quad_sigma", self.quad_sigma, -np.inf),
+            ("decode_sharpening", self.decode_sharpening, -np.inf),
+        )
+        for name, value, lower_bound in values:
+            normalized = _float_value(value, name)
+            if not np.isfinite(normalized) or normalized <= lower_bound:
+                raise ValueError(
+                    f"{name} must be finite and greater than {lower_bound}"
+                )
+            object.__setattr__(self, name, normalized)
+        object.__setattr__(self, "nthreads", int(self.nthreads))
+        object.__setattr__(self, "refine_edges", int(self.refine_edges))
 
 
 @dataclass(frozen=True)
@@ -149,6 +223,8 @@ class LocalizerConfig:
     min_tag_area: float = 16.0
     robust_loss: str = "huber"
     robust_scale: float = 1.345
+    detector: DetectorConfig = field(default_factory=DetectorConfig)
+    map_mode: str = "discover"
 
     def __post_init__(self) -> None:
         if not isinstance(self.tag_family, str) or not self.tag_family:
@@ -174,11 +250,18 @@ class LocalizerConfig:
             raise ValueError("robust_loss must be a string")
         if self.robust_loss not in {"none", "huber", "cauchy"}:
             raise ValueError("robust_loss must be none, huber, or cauchy")
+        if not isinstance(self.map_mode, str) or self.map_mode not in {
+            "discover",
+            "fixed",
+        }:
+            raise ValueError("map_mode must be discover or fixed")
         object.__setattr__(self, "pixel_noise", pixel_noise)
         object.__setattr__(self, "max_reprojection_error", max_error)
         object.__setattr__(self, "min_decision_margin", min_margin)
         object.__setattr__(self, "min_tag_area", min_area)
         object.__setattr__(self, "robust_scale", robust_scale)
+        if not isinstance(self.detector, DetectorConfig):
+            raise ValueError("detector must be a DetectorConfig")
 
     @classmethod
     def from_mapping(cls, config: Mapping[str, object]) -> LocalizerConfig:
@@ -192,6 +275,8 @@ class LocalizerConfig:
             "min_tag_area",
             "robust_loss",
             "robust_scale",
+            "detector",
+            "map_mode",
         }
         unknown = set(config) - allowed
         if unknown:
@@ -200,10 +285,17 @@ class LocalizerConfig:
             )
         family = config.get("tag_family", "tag36h11")
         robust_loss = config.get("robust_loss", "huber")
+        detector = config.get("detector", {})
         if not isinstance(family, str) or not family:
             raise ValueError("tag_family must be a non-empty string")
         if not isinstance(robust_loss, str):
             raise ValueError("robust_loss must be a string")
+        if not isinstance(detector, Mapping):
+            raise ValueError("detector must be a mapping")
+        detector_config = DetectorConfig(**detector)
+        map_mode = config.get("map_mode", "discover")
+        if not isinstance(map_mode, str):
+            raise ValueError("map_mode must be discover or fixed")
         return cls(
             tag_family=family,
             pixel_noise=_float_value(config.get("pixel_noise", 1.0), "pixel_noise"),
@@ -220,4 +312,6 @@ class LocalizerConfig:
             robust_scale=_float_value(
                 config.get("robust_scale", 1.345), "robust_scale"
             ),
+            detector=detector_config,
+            map_mode=map_mode,
         )

@@ -1,7 +1,14 @@
 import numpy as np
 import pytest
 
-from tagatlas import Detection, LocalizationResult, LocalizerConfig, Pose, TagMap
+from tagatlas import (
+    Detection,
+    DetectorConfig,
+    LocalizationResult,
+    LocalizerConfig,
+    Pose,
+    TagMap,
+)
 
 
 def test_pose_validates_shapes_and_exposes_identity_matrix() -> None:
@@ -63,6 +70,18 @@ def test_localization_result_is_deeply_immutable() -> None:
             reprojection_rmse=0.0,
         )
 
+    result_with_covariance = LocalizationResult(
+        success=True,
+        frame_id=0,
+        camera_pose=Pose.identity(),
+        tag_poses={0: Pose.identity()},
+        used_tag_ids=(0,),
+        reprojection_rmse=0.0,
+        pose_covariance=np.eye(6),
+    )
+    with pytest.raises(ValueError):
+        result_with_covariance.pose_covariance[0, 0] = 0.0  # type: ignore[index]
+
 
 def test_config_normalizes_mapping_values() -> None:
     tag_map = TagMap.from_mapping(
@@ -113,3 +132,18 @@ def test_config_rejects_invalid_values() -> None:
         LocalizerConfig(pixel_noise=float("inf"))
     with pytest.raises(ValueError, match="unknown"):
         LocalizerConfig.from_mapping({"pixel_niose": 1.0})
+
+
+def test_detector_config_is_loaded_from_mapping() -> None:
+    config = LocalizerConfig.from_mapping(
+        {"detector": {"nthreads": 2, "quad_decimate": 2.0}}
+    )
+
+    assert config.detector == DetectorConfig(nthreads=2, quad_decimate=2.0)
+
+
+def test_detector_config_rejects_invalid_values() -> None:
+    with pytest.raises(ValueError, match="nthreads"):
+        DetectorConfig(nthreads=0)
+    with pytest.raises(ValueError, match="quad_decimate"):
+        DetectorConfig(quad_decimate=0.0)

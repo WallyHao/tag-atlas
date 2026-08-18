@@ -86,6 +86,38 @@ def test_localizer_discovers_tag_and_optimizes_multiple_frames() -> None:
     assert localizer.factor_count == 4
 
 
+def test_fixed_map_does_not_discover_new_tags() -> None:
+    camera = CameraModel(
+        np.array([[500.0, 0.0, 320.0], [0.0, 500.0, 240.0], [0.0, 0.0, 1.0]])
+    )
+    tag_poses = {
+        0: Pose.identity(),
+        1: Pose(np.eye(3), np.array([0.4, 0.0, 0.0])),
+    }
+    frame = make_frame(
+        camera,
+        Pose(np.diag([1.0, -1.0, -1.0]), np.array([0.0, 0.0, 1.5])),
+        tag_poses,
+        [0, 1],
+    )
+    localizer = Localizer(
+        camera=camera,
+        tag_map=TagMap(
+            reference_tag_id=0,
+            tag_sizes={0: 0.12, 1: 0.12},
+            tag_poses={1: tag_poses[1]},
+        ),
+        config=LocalizerConfig(map_mode="fixed"),
+        detector=SequenceDetector([frame]),
+    )
+
+    result = localizer.locate(np.zeros((480, 640), dtype=np.uint8))
+
+    assert result.success
+    assert result.diagnostics.new_tag_ids == ()
+    assert set(result.tag_poses) == {0, 1}
+
+
 def test_noisy_synthetic_sequence_stays_within_quality_gate() -> None:
     camera = CameraModel(
         np.array([[500.0, 0.0, 320.0], [0.0, 500.0, 240.0], [0.0, 0.0, 1.0]])
@@ -272,13 +304,17 @@ def test_initial_reprojection_failure_does_not_update_graph(
         tag_map=TagMap(reference_tag_id=0, tag_sizes={0: 0.12}),
         detector=SequenceDetector([frame]),
     )
-    monkeypatch.setattr(localizer_module, "reprojection_rmse", lambda *_args: 2.0)
+    monkeypatch.setattr(
+        localizer_module,
+        "_detection_reprojection_rmses",
+        lambda *_args, **_kwargs: {0: 2.0},
+    )
 
     result = localizer.locate(np.zeros((480, 640), dtype=np.uint8))
 
     assert not result.success
-    assert result.reason == "initial reprojection error exceeds configured limit"
-    assert result.used_tag_ids == (0,)
+    assert result.reason == "all observations exceed reprojection limit"
+    assert result.used_tag_ids == ()
     assert localizer.factor_count == 0
 
 
@@ -386,7 +422,7 @@ def test_reprojection_failure_after_optimization_is_rolled_back(
         tag_map=TagMap(reference_tag_id=0, tag_sizes={0: 0.12}),
         detector=SequenceDetector([[*make_frame(camera, camera_pose, tag_poses, [0])]]),
     )
-    values = iter([0.0, 2.0])
+    values = iter([2.0, 2.0])
     monkeypatch.setattr(
         localizer_module, "reprojection_rmse", lambda *_args: next(values)
     )
