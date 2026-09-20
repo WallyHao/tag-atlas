@@ -15,7 +15,7 @@ uv run mypy src
 `uv run pytest` also enforces branch coverage with a minimum total threshold
 of 90%.
 
-The same checks run in `.github/workflows/ci.yml` for Python 3.10 and 3.12.
+The same checks run in `.github/workflows/ci.yml` for Python 3.11 and 3.12.
 
 The current tests cover SE(3) round trips, camera projection, calibration
 validation, detector normalization, connected new-tag discovery, and
