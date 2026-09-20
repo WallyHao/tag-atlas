@@ -8,7 +8,7 @@ contributions that keep the public API explicit and well tested are welcome.
 TagAtlas uses [uv](https://github.com/astral-sh/uv) for environment management.
 
 ```bash
-git clone https://github.com/waliwuao/tagatlas.git
+git clone https://github.com/WallyHao/tag-atlas.git
 cd tagatlas
 uv sync --dev
 ```

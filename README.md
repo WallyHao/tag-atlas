@@ -1,6 +1,6 @@
 # TagAtlas
 
-[![CI](https://github.com/waliwuao/tagatlas/actions/workflows/ci.yml/badge.svg)](https://github.com/waliwuao/tagatlas/actions/workflows/ci.yml)
+[![CI](https://github.com/WallyHao/tag-atlas/actions/workflows/ci.yml/badge.svg)](https://github.com/WallyHao/tag-atlas/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.11%20%7C%203.12-blue.svg)](pyproject.toml)
 [![Ruff](https://img.shields.io/badge/lint-ruff-261230.svg)](https://github.com/astral-sh/ruff)
@@ -53,7 +53,7 @@ module boundaries.
 TagAtlas is not yet published on PyPI. Install from source:
 
 ```bash
-git clone https://github.com/waliwuao/tagatlas.git
+git clone https://github.com/WallyHao/tag-atlas.git
 cd tagatlas
 uv sync
 ```
