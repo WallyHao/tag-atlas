@@ -1,22 +1,66 @@
 # TagAtlas
 
-TagAtlas is a Python library for multi-AprilTag spatial localization, coordinate
-transforms, and pose fusion.
+[![CI](https://github.com/waliwuao/tagatlas/actions/workflows/ci.yml/badge.svg)](https://github.com/waliwuao/tagatlas/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Python](https://img.shields.io/badge/python-3.11%20%7C%203.12-blue.svg)](pyproject.toml)
+[![Ruff](https://img.shields.io/badge/lint-ruff-261230.svg)](https://github.com/astral-sh/ruff)
+[![Mypy](https://img.shields.io/badge/type-mypy%20strict-2a6db2.svg)](https://mypy-lang.org/)
+[![Coverage](https://img.shields.io/badge/coverage-%E2%89%A590%25-brightgreen.svg)](docs/verification.md)
+[![uv](https://img.shields.io/badge/managed%20by-uv-de5fe9.svg)](https://github.com/astral-sh/uv)
 
-## Development Setup
+**Multi-AprilTag 6-DoF localization and pose fusion for robotics.**
 
-```bash
-uv sync --dev
-uv run pytest
-uv run ruff check .
-uv run mypy src
+TagAtlas estimates a calibrated camera's pose from one or more AprilTags. It
+builds an incremental GTSAM factor graph, discovers unknown Tag poses online,
+and fuses every visible Tag with a robust noise model. It is a self-contained
+Python library: no ROS, no GPU, no simulator required.
+
+## Features
+
+- **6-DoF camera localization** from a single Tag, improving as more Tags enter
+  the frame.
+- **Online map discovery** or **fixed-map localization** against a saved map.
+- **Incremental pose graph** using GTSAM `ISAM2` with analytic `Pose3`
+  Jacobians for an eight-dimensional corner-projection factor.
+- **Robust estimation** with Huber or Cauchy losses for outlier rejection.
+- **Immutable, validated, typed** public models; strict-mypy clean and
+  PEP 561 typed.
+- **Deterministic failure handling**: unobservable frames are rejected with a
+  reason instead of corrupting the graph, and a failed graph update rolls back.
+
+## Architecture
+
+```mermaid
+flowchart LR
+    A[Image] --> B[AprilTag detection]
+    B --> C[Filter: family, size, margin, duplicates]
+    C --> D{Known Tag visible?}
+    D -- no --> R[Reject frame with reason]
+    D -- yes --> E[PnP camera initialization]
+    E --> F[Seed connected new Tag poses]
+    F --> G[GTSAM iSAM2 update]
+    G --> H[Optimized camera pose + Tag map + RMSE]
 ```
 
-## Usage
+The fixed reference Tag defines the world frame. A transform is named
+`T_dst_src` when it converts coordinates from `src` to `dst`, so the returned
+pose is `T_world_camera` and a detector measurement is `T_camera_tag`. See
+[`docs/architecture.md`](docs/architecture.md) for the full convention and
+module boundaries.
 
-The public API uses explicit configuration objects. `TagMap` describes the
-static Tag map, `LocalizerConfig` describes algorithm parameters, and
-`Localizer` owns the stateful runtime graph.
+## Install
+
+TagAtlas is not yet published on PyPI. Install from source:
+
+```bash
+git clone https://github.com/waliwuao/tagatlas.git
+cd tagatlas
+uv sync
+```
+
+A Python 3.11 or 3.12 environment is required because of the GTSAM wheels.
+
+## Quickstart
 
 ```python
 import cv2
@@ -32,10 +76,7 @@ camera = CameraModel(
     distortion_coefficients=np.array([-0.01, 0.001, 0.0, 0.0, 0.0], dtype=np.float64),
 )
 
-tag_map = TagMap(
-    reference_tag_id=0,
-    tag_sizes={0: 0.12, 1: 0.12, 2: 0.15},
-)
+tag_map = TagMap(reference_tag_id=0, tag_sizes={0: 0.12, 1: 0.12, 2: 0.15})
 
 localizer = Localizer(
     camera=camera,
@@ -46,6 +87,7 @@ localizer = Localizer(
 image = cv2.imread("frame.png")
 if image is None:
     raise RuntimeError("unable to read frame.png")
+
 result = localizer.locate(image)
 if result.success:
     print(result.camera_pose)
@@ -54,23 +96,14 @@ else:
     print(f"frame rejected: {result.reason}")
 ```
 
-The fixed reference Tag defines the world-frame origin. All declared Tag sizes
-are in meters. Call `locate()` on sequential frames and `reset()` to clear the
-trajectory and discovered map.
+Call `locate()` on sequential frames and `reset()` to clear the trajectory and
+discovered map. The default detector is `pupil-apriltags`; a custom detector can
+be injected through the `detector` argument. Localization always returns a
+`LocalizationResult`, so a frame with no usable Tag is reported through `reason`
+and `diagnostics` rather than raised as an exception.
 
-Calls on one `Localizer` instance are serialized. Use separate instances for
-independent concurrent pipelines.
-
-`CameraModel` supports a 3x3 pinhole matrix and zero to five OpenCV radtan
-distortion coefficients in the order `k1, k2, p1, p2, k3`.
-
-The default detector uses `pupil-apriltags`; a custom implementation can be
-injected through the `detector` argument when constructing `Localizer`.
-Localization always returns a `LocalizationResult`: a frame with no configured
-Tag is reported through `reason` and `diagnostics` rather than treated as an
-exception. Use `TagMap.to_json()` and `TagMap.from_json()` to persist a map, and
-set `LocalizerConfig(map_mode="fixed")` to use saved Tag poses without map
-discovery.
+Use `TagMap.to_json()` / `TagMap.from_json()` to persist a discovered map, and
+set `LocalizerConfig(map_mode="fixed")` to localize against saved Tag poses.
 
 ## Package Layout
 
@@ -89,7 +122,29 @@ src/tagatlas/
 tests/                   Automated tests
 ```
 
-See [`docs/usage.md`](docs/usage.md) for the complete workflow.
+## Documentation
 
-See [`examples/README.md`](examples/README.md) for a live online mapping
-example with visualization.
+- [`docs/usage.md`](docs/usage.md) — the complete workflow.
+- [`docs/architecture.md`](docs/architecture.md) — coordinate convention and
+  module boundaries.
+- [`docs/verification.md`](docs/verification.md) — quality gates and test data.
+- [`docs/performance.md`](docs/performance.md) — what a benchmark must report.
+- [`examples/README.md`](examples/README.md) — a live online-mapping example
+  with 2D and 3D visualization.
+
+## Development
+
+```bash
+uv sync --dev
+uv run pytest            # enforces >=90% branch coverage
+uv run ruff check .
+uv run ruff format --check .
+uv run mypy src
+```
+
+The same checks run in CI on Python 3.11 and 3.12. See
+[`CONTRIBUTING.md`](CONTRIBUTING.md) before opening a pull request.
+
+## License
+
+Released under the [MIT License](LICENSE).
