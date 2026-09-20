@@ -1,16 +1,37 @@
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "tagatlas"
 dynamic = ["version"]
-description = "Multi-AprilTag spatial localization and pose fusion."
+description = "Multi-AprilTag 6-DoF spatial localization and pose fusion."
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
+license-files = ["LICENSE"]
 authors = [
-    { name = "TagAtlas Contributors" },
+    { name = "waliwuao", email = "waliwuao@users.noreply.github.com" },
+]
+keywords = [
+    "apriltag",
+    "pose-estimation",
+    "localization",
+    "slam",
+    "robotics",
+    "gtsam",
+    "factor-graph",
+    "computer-vision",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Typing :: Typed",
 ]
 dependencies = [
     "numpy>=1.23",
@@ -19,6 +40,13 @@ dependencies = [
     "pupil-apriltags>=1.0.4",
     "matplotlib>=3.7",
 ]
+
+[project.urls]
+Homepage = "https://github.com/waliwuao/tagatlas"
+Repository = "https://github.com/waliwuao/tagatlas"
+Issues = "https://github.com/waliwuao/tagatlas/issues"
+Documentation = "https://github.com/waliwuao/tagatlas/tree/main/docs"
+Changelog = "https://github.com/waliwuao/tagatlas/blob/main/CHANGELOG.md"
 
 [dependency-groups]
 dev = [
@@ -30,6 +58,9 @@ dev = [
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+tagatlas = ["py.typed"]
 
 [tool.setuptools.dynamic]
 version = { attr = "tagatlas._version.__version__" }
